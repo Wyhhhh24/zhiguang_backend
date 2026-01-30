@@ -2,8 +2,33 @@
 <!DOCTYPE mapper
         PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.tongji.user.mapper.UserMapper">
 
+<!--
+| `namespace`       绑定 XML 和 Mapper 接口，决定了这些 SQL 属于哪个 Mapper 接口
+  namespace = Mapper 接口的全限定名，用来绑定 Java 接口 和 XML SQL 的。
+  MyBatis 是怎么用它的？
+  MyBatis 启动时会扫描 Mapper XML
+  namespace 对应一个 Mapper 接口
+  XML 里的每个 <select | insert | update | delete> ，必须和接口里的 方法名一一对应
+
+| `resultMap`       数据库字段 → Java 对象属性 的映射规则，决定了：SQL 查出来的每一行，怎么变成一个 Java 对象
+  用于解决：
+  字段名 ≠ 属性名
+  类型转换
+  如果直接用 resultType：
+    MyBatis 默认靠字段名=属性名
+    下划线 → 驼峰要靠全局配置
+    可控性不强
+    复杂对象映射
+
+| `parameterType`   告诉 MyBatis SQL 参数的类型，这个 SQL 接收的参数是什么类型
+                    可以不写 parameterType，因为 MyBatis 能从方法签名里“自动推断”参数类型。
+
+| `SELECT EXISTS`   “高性能的是否存在判断” 比 COUNT 更适合做校验
+    COUNT(*) 会扫描所有符合条件的行，数据量大时 性能差
+    EXISTS 找到第一条就返回，不关心数量，索引命中非常快
+-->
+<mapper namespace="com.tongji.user.mapper.UserMapper">
     <resultMap id="UserResultMap" type="com.tongji.user.domain.User">
         <id column="id" property="id"/>
         <result column="phone" property="phone"/>
@@ -35,6 +60,7 @@
         LIMIT 1
     </select>
 
+    <!--  MyBatis 内置了 BooleanTypeHandler 来自动进行类型转换： 存在时：1 (TRUE) 不存在时：0 (FALSE)  -->
     <select id="existsByPhone" parameterType="string" resultType="boolean">
         SELECT EXISTS(
             SELECT 1
@@ -51,8 +77,7 @@
         )
     </select>
 
-    <insert id="insert" parameterType="com.tongji.user.domain.User"
-            useGeneratedKeys="true" keyProperty="id">
+    <insert id="insert" parameterType="com.tongji.user.domain.User" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO users (
             phone,
             email,
@@ -113,7 +138,7 @@
         WHERE id = #{id}
     </update>
 
-  <select id="existsByZgIdExceptId" resultType="boolean">
+    <select id="existsByZgIdExceptId" resultType="boolean">
         SELECT EXISTS(
             SELECT 1
             FROM users
@@ -130,5 +155,4 @@
             #{id}
         </foreach>
     </select>
-
 </mapper>

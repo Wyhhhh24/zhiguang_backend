@@ -17,13 +17,16 @@ public class UserServiceImpl implements UserService {
 
     private final UserMapper userMapper;
 
+    // @Transactional(readOnly = true) 只读事务，只能执行 SELECT，不能执行写操作
+    // 读写事务（默认） 可以执行 INSERT、UPDATE、DELETE、SELECT
+
     /**
      * 根据手机号查询用户。
      *
      * @param phone 手机号。
      * @return 用户 Optional。
      */
-    @Transactional(readOnly = true) // 声明这是一个只读事务，底层数据库可以做些优化
+    @Transactional(readOnly = true) // 声明这是一个只读事务，数据库的底层可以做些优化
     public Optional<User> findByPhone(String phone) {
         // 将可能为 null 的值包装成 Optional对象，避免空指针异常（防御性编程）
         return Optional.ofNullable(userMapper.findByPhone(phone));
@@ -52,7 +55,7 @@ public class UserServiceImpl implements UserService {
     }
 
     /**
-     * 判断手机号是否存在。
+     * 判断是否存在该手机号的用户。
      *
      * @param phone 手机号。
      * @return 是否存在。
@@ -63,7 +66,7 @@ public class UserServiceImpl implements UserService {
     }
 
     /**
-     * 判断邮箱是否存在。
+     * 判断是否存在该邮箱的用户。
      *
      * @param email 邮箱地址。
      * @return 是否存在。
@@ -81,7 +84,7 @@ public class UserServiceImpl implements UserService {
      */
     @Transactional
     public User createUser(User user) {
-        // 获取的是当前的 UTC 时间点，表示从 1970-01-01T00:00:00Z (UTC)​ 开始的纳秒数
+        // 获取的是当前的 UTC 时间点，表示从 1970-01-01T00:00:00Z (UTC) 开始的纳秒数
         Instant now = Instant.now();
         user.setCreatedAt(now);
         user.setUpdatedAt(now);
