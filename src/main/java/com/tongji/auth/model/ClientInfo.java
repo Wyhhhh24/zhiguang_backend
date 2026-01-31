@@ -1,7 +1,7 @@
 package com.tongji.auth.model;
 
 /**
- * 客户端信息。
+ * 用户登录的客户端信息类。
  * <p>
  * 记录客户端 IP 与 User-Agent，用于登录审计、风控与活动记录。
  * 该对象通常由控制器从 HTTP 请求中解析生成。

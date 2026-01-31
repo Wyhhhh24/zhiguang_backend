@@ -14,9 +14,10 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 
 /**
- * PEM 密钥读取工具。
+ * PEM 密钥读取工具，读取本地的私钥、公钥文件。
  * <p>
- * 支持从 `Resource` 读取 PKCS#8 私钥与 X.509 公钥，去除头尾与空白后进行 Base64 解码，
+ * 支持从 `Resource` 读取 PKCS#8 私钥与 X.509 公钥，去除头尾与空白后得到的是 Base64 进行编码的干净字符串
+ * 然后 Base64 解码得到所需要的字节数组
  * 生成 `RSAPrivateKey` 与 `RSAPublicKey`。用于 JWT 的 RS256 编解码配置。
  */
 public final class PemUtils {
@@ -42,14 +43,17 @@ public final class PemUtils {
     public static RSAPrivateKey readPrivateKey(Resource resource) {
         try {
             String pem = readResource(resource);
-            // 标准化处理
+            // 字符串标准化处理、格式化提取，得到 Base64 编码的干净字符串
             String keyData = pem.replace(PRIVATE_BEGIN, "")
                     .replace(PRIVATE_END, "")
-                    .replaceAll("\\s", ""); // 删除 PEM 密钥中的所有空白字符
+                    .replaceAll("\\s", ""); // 删除字符串中所有空白字符
             // 将 Base64 编码的字符串解码为原始的字节数组
             byte[] keyBytes = Base64.getDecoder().decode(keyData);
+
             PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
+            // 从 Key 工厂中获取 RSA Key 工厂实例
             KeyFactory kf = KeyFactory.getInstance("RSA");
+            // 最后得到 RSAPrivateKey 对象并返回
             return (RSAPrivateKey) kf.generatePrivate(spec);
         } catch (IOException | GeneralSecurityException ex) {
             throw new IllegalStateException("Failed to read RSA private key", ex);
@@ -66,12 +70,17 @@ public final class PemUtils {
     public static RSAPublicKey readPublicKey(Resource resource) {
         try {
             String pem = readResource(resource);
+            // 字符串标准化处理、格式化提取，得到 Base64 编码的干净字符串
             String keyData = pem.replace(PUBLIC_BEGIN, "")
                     .replace(PUBLIC_END, "")
-                    .replaceAll("\\s", "");
+                    .replaceAll("\\s", ""); // 删除字符串中所有空白字符
+            // 将 Base64 编码的字符串解码为原始的字节数组
             byte[] keyBytes = Base64.getDecoder().decode(keyData);
+
             X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
+            // 从 Key 工厂中获取 RSA Key 工厂实例
             KeyFactory kf = KeyFactory.getInstance("RSA");
+            // 最后得到 RSAPublic 对象并返回
             return (RSAPublicKey) kf.generatePublic(spec);
         } catch (IOException | GeneralSecurityException ex) {
             throw new IllegalStateException("Failed to read RSA public key", ex);

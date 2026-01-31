@@ -57,12 +57,39 @@ import org.springframework.security.oauth2.jwt.JwtException;
 @RequiredArgsConstructor
 public class AuthService {
 
+    /**
+     * 用户服务
+     */
     private final UserService userService;
+
+    /**
+     * 验证码业务服务
+     */
     private final VerificationService verificationService;
+
+    /**
+     * 密码编码器
+     */
     private final PasswordEncoder passwordEncoder;
+
+    /**
+     * JWT 令牌服务
+     */
     private final JwtService jwtService;
+
+    /**
+     * 基于 Redis 的刷新令牌白名单存储服务
+     */
     private final RefreshTokenStore refreshTokenStore;
+
+    /**
+     * 登录日志服务
+     */
     private final LoginLogService loginLogService;
+
+    /**
+     * 配置类
+     */
     private final AuthProperties authProperties;
 
     /**
@@ -75,6 +102,7 @@ public class AuthService {
      * @throws BusinessException 当标识格式错误或存在性不符合场景要求时抛出。
      */
     public SendCodeResponse sendCode(SendCodeRequest request) {
+        // 提取方法，进行分标识类型校验
         // 对传过来的标识值，基于标识类型进行分类校验
         validateIdentifier(request.identifierType(), request.identifier());
 

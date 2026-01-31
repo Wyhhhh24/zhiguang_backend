@@ -13,12 +13,13 @@ import java.time.Duration;
  * - Jwt：令牌签发与验证配置；
  * - Verification：验证码发送与校验配置；
  * - Password：密码策略与加密强度配置。
- * 属性持有类，还未注册为 Bean ，仅实现了属性绑定，需要在配置类中将该类注册为 Bean
+ * 属性持有类，还未注册为 Bean ，仅实现了yaml配置文件的配置与java类属性绑定，还需要在配置类中将该类注册为 Bean
  */
 @Data
 @ConfigurationProperties(prefix = "auth")
 public class AuthProperties {
 
+    // 保证子配置永远不为 null，防止被 Spring 重新 set 掉
     /** JWT 配置项。 */
     private final Jwt jwt = new Jwt();
     /** 验证码配置项。 */
@@ -53,9 +54,9 @@ public class AuthProperties {
         private Duration ttl = Duration.ofMinutes(5);
         /** 最大校验尝试次数。 */
         private int maxAttempts = 5;
-        /** 同标识连续发送的最小间隔。 */
+        /** 同（场景+标识）连续发送的最小间隔。 */
         private Duration sendInterval = Duration.ofSeconds(60);
-        /** 同标识每日发送上限。 */
+        /** 同（场景+标识）每日发送上限。 */
         private int dailyLimit = 10;
     }
 

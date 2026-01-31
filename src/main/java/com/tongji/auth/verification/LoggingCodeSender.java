@@ -16,7 +16,7 @@ public class LoggingCodeSender implements CodeSender {
      * 记录验证码发送信息到日志（不实际发送）。
      *
      * @param scene         验证码场景。
-     * @param identifier    标识（手机号或邮箱）。
+     * @param identifier    账号标识（手机号或邮箱）。
      * @param code          验证码内容。
      * @param expireMinutes 有效期（分钟）。
      */

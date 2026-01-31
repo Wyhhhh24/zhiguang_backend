@@ -2,6 +2,7 @@ package com.tongji.auth.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -35,8 +36,8 @@ public class SecurityConfig {
      * <p>主要包含：</p>
      * - 关闭 CSRF；
      * - 启用 CORS；
-     * - 使用无状态会话策略；
-     * - 公开认证接口与健康检查，其余接口需鉴权；
+     * - 使用无状态会话策略（不生成 JSESSIONID ，服务器记不住“上一个请求是谁发的”，前端必须在每一次请求里都带上 JWT 令牌，服务器才能认出你是谁）；
+     * - 公开认证接口与健康检查，其余接口需鉴权（制定了具体的访问白名单）；
      * - 启用资源服务器的 JWT 校验。
      *
      * @param http Spring 的 {@link HttpSecurity} 构建器。
@@ -54,9 +55,9 @@ public class SecurityConfig {
                         // 公开内容：首页 Feed 不需要登录
                         .requestMatchers("/api/v1/knowposts/feed").permitAll()
                         // 知文详情（公开已发布内容，非公开由服务层校验）
-                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/detail/*").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/knowposts/detail/*").permitAll()
                         // 知文详情页 RAG 问答（SSE 流式输出）允许匿名访问
-                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/v1/knowposts/*/qa/stream").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/knowposts/*/qa/stream").permitAll()
                         .requestMatchers(
                                 "/api/v1/auth/send-code",
                                 "/api/v1/auth/register",
@@ -68,6 +69,7 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));
+                // 告诉 Spring Security：“我们是资源服务器，请检查请求头里的 Token，如果是合法的 JWT，就放行并解析出用户信息。”
         return http.build();
     }
 

@@ -3,7 +3,7 @@ package com.tongji.auth.token;
 import java.time.Instant;
 
 /**
- * 访问令牌与刷新令牌的组合。
+ * 访问令牌 accessToken 与刷新令牌 refreshToken 的组合。
  * <p>
  * 字段说明：
  * - accessToken：访问令牌（JWT 字符串，Bearer 使用）；

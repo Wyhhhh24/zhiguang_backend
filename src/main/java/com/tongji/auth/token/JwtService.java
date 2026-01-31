@@ -31,7 +31,7 @@ public class JwtService {
     private static final String CLAIM_TOKEN_TYPE = "token_type";
     private static final String CLAIM_USER_ID = "uid";
 
-    // 注入 JWT 编码器、解码器
+    // 注入 Bean JWT 编码器、解码器
     private final JwtEncoder jwtEncoder;
     private final JwtDecoder jwtDecoder;
     // 注入属性持有类
@@ -43,18 +43,20 @@ public class JwtService {
     /**
      * 为指定用户签发一对 Access/Refresh Token。
      * <p>
-     * 令牌类型通过 `token_type` 声明区分；Refresh Token 的 `jti` 用于白名单存储与撤销。
+     * 令牌类型通过 `token_type` 声明区分；Refresh Token 的 `jti` 也就是 tokenId 用于白名单存储与撤销。
      * 过期时间取自配置 `AuthProperties.jwt`。
      *
      * @param user 用户实体。
-     * @return 令牌对与对应过期时间及刷新令牌 ID。
+     * @return 令牌对与对应过期时间及刷新令牌 ID (refreshTokenId)。
      */
     public TokenPair issueTokenPair(User user) {
         String refreshTokenId = UUID.randomUUID().toString();
+        // 获取当前时间戳
         Instant issuedAt = Instant.now(clock);
+        // 计算出 accessToken 与 refreshToken 的过期时间戳，当前时间戳加上一个时间间隔
         Instant accessExpiresAt = issuedAt.plus(properties.getJwt().getAccessTokenTtl());
         Instant refreshExpiresAt = issuedAt.plus(properties.getJwt().getRefreshTokenTtl());
-        // accessTokenId 通过 UUID 生成，并未返回
+        // accessTokenId 也是通过 UUID 生成，但无需返回，因为无需它的作用；而 refreshTokenId 需要返回，因为需要作为 refreshToken 的白名单标识
         String accessToken = encodeToken(user, issuedAt, accessExpiresAt, "access", UUID.randomUUID().toString());
         String refreshToken = encodeRefreshToken(user, issuedAt, refreshExpiresAt, refreshTokenId);
         return new TokenPair(accessToken, accessExpiresAt, refreshToken, refreshExpiresAt, refreshTokenId);
@@ -82,20 +84,21 @@ public class JwtService {
      */
     private String encodeToken(User user, Instant issuedAt, Instant expiresAt, String tokenType, String tokenId) {
         JwtClaimsSet claims = JwtClaimsSet.builder()
-                .issuer(properties.getJwt().getIssuer())
-                .issuedAt(issuedAt)
-                .expiresAt(expiresAt)
-                .subject(String.valueOf(user.getId()))
-                .id(tokenId)
-                .claim(CLAIM_TOKEN_TYPE, tokenType)
-                .claim(CLAIM_USER_ID, user.getId())
-                .claim("nickname", user.getNickname())
+                .issuer(properties.getJwt().getIssuer()) // 签发者标识 "zhiguang"
+                .issuedAt(issuedAt) // 签发时间（时间戳）
+                .expiresAt(expiresAt) // 过期时间（时间戳）
+                .subject(String.valueOf(user.getId())) // 用户 Id
+                .id(tokenId) // 令牌 Id
+                .claim(CLAIM_TOKEN_TYPE, tokenType) // 令牌类型
+                .claim(CLAIM_USER_ID, user.getId()) // 用户 Id
+                .claim("nickname", user.getNickname()) // 用户昵称
                 .build();
+        // 通过 JWT 编码器的 Bean ，调用编码方法生成 token
         return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
     }
 
     /**
-     * 编码刷新令牌。
+     * 编码刷新令牌 refreshToken。
      *
      * @param user      用户实体。
      * @param issuedAt  签发时间。
@@ -105,14 +108,15 @@ public class JwtService {
      */
     private String encodeRefreshToken(User user, Instant issuedAt, Instant expiresAt, String tokenId) {
         JwtClaimsSet claims = JwtClaimsSet.builder()
-                .issuer(properties.getJwt().getIssuer())
-                .issuedAt(issuedAt)
-                .expiresAt(expiresAt)
-                .subject(String.valueOf(user.getId()))
-                .id(tokenId)
-                .claim(CLAIM_TOKEN_TYPE, "refresh")
-                .claim(CLAIM_USER_ID, user.getId())
+                .issuer(properties.getJwt().getIssuer()) // 签发者标识 "zhiguang"
+                .issuedAt(issuedAt) // 签发时间（时间戳）
+                .expiresAt(expiresAt) // 过期时间（时间戳）
+                .subject(String.valueOf(user.getId())) // 用户 Id
+                .id(tokenId) // 令牌 Id
+                .claim(CLAIM_TOKEN_TYPE, "refresh") // 令牌类型
+                .claim(CLAIM_USER_ID, user.getId()) // 用户 Id
                 .build();
+        // 通过 JWT 编码器的 Bean ，调用编码方法生成 token
         return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
     }
 

@@ -7,7 +7,7 @@ import com.tongji.auth.model.IdentifierType;
 /**
  * 注册请求。
  * <p>
- * 字段：账号类型与值、验证码、可选密码、是否同意服务条款。
+ * 字段：标识类型与标识值、验证码、可选密码、是否同意服务条款。
  * 验证：需通过验证码校验；当提供密码时需通过密码策略校验。
  */
 public record RegisterRequest(

@@ -6,6 +6,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 
+/**
+ * 登录日志服务
+ */
 @Service
 @RequiredArgsConstructor
 public class LoginLogService {

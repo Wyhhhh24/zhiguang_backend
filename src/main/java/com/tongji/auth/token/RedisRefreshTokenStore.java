@@ -30,7 +30,9 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void storeToken(long userId, String tokenId, Duration ttl) {
+        // 基于 userId 与 tokenId 生成白名单键名: "auth:rt:userId:tokenId"
         String key = key(userId, tokenId);
+        // 写入白名单，value 为 "1" ，并设置过期时间
         redisTemplate.opsForValue().set(key, "1", ttl);
     }
 
@@ -43,7 +45,9 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public boolean isTokenValid(long userId, String tokenId) {
+        // 基于 userId 与 tokenId 生成白名单键名: "auth:rt:userId:tokenId"
         String key = key(userId, tokenId);
+        // 查询白名单，获取对应的 value ，判断是否有效
         return Objects.equals("1", redisTemplate.opsForValue().get(key));
     }
 
@@ -55,6 +59,8 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void revokeToken(long userId, String tokenId) {
+        // 基于 userId 与 tokenId 生成白名单键名: "auth:rt:userId:tokenId"
+        // 然后将该 Key 删除，也就是移出白名单
         redisTemplate.delete(key(userId, tokenId));
     }
 
@@ -65,8 +71,14 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void revokeAll(long userId) {
+        // 基于 userId 生成白名单键名: "auth:rt:userId:*"
         String pattern = "auth:rt:%d:*".formatted(userId);
+        // 根据匹配模式获取 Redis 中所有符合条件的 Key ，返回值是 Set<String>
+        // 如果没有找到任何匹配的 Key ，返回的是一个空 Set
         var keys = redisTemplate.keys(pattern);
+        // Redis 的 KEYS 命令是阻塞式的。如果你的 Redis 数据库中 Key 的数量非常多（百万级以上）
+        // 执行 keys 会导致 Redis 卡顿，进而引发线上服务的超时或雪崩。
+        // 如果找到了，就调用 delete 方法一次性把这些 Key 全部删掉。
         if (!keys.isEmpty()) {
             redisTemplate.delete(keys);
         }
