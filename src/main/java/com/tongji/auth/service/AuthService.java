@@ -484,7 +484,6 @@ public class AuthService {
 
     /**
      * 解码刷新令牌，失败时返回空 Optional。
-     * test
      * @param refreshToken 刷新令牌字符串。
      * @return 成功时返回 JWT，失败时返回 Optional.empty()。
      */
