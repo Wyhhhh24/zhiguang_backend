@@ -33,16 +33,29 @@ public class LoginLog {
     private String identifier;
 
     /**
-     * 登录来源渠道，例如 "iOS_App"，"Android_App"，"Web_Console"。
+     * 渠道：PASSWORD/CODE/REGISTER。
      */
     private String channel;
 
+    /**
+     * 客户端 ip
+     */
     private String ip;
 
+    /**
+     * 获取的是 客户端（浏览器/App/爬虫等）发送的 User-Agent 字符串，它包含了客户端的软件信息
+     * 如使用的浏览器类型和版本、操作系统、设备信息、渲染引擎
+     */
     private String userAgent;
 
+    /**
+     * 操作成功还是失败，日志成功还是失败
+     */
     private String status;
 
+    /**
+     * 创建时间
+     */
     private Instant createdAt;
 }
 

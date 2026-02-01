@@ -88,94 +88,107 @@ public class AuthService {
     private final LoginLogService loginLogService;
 
     /**
-     * 配置类
+     * 配置持有类
      */
     private final AuthProperties authProperties;
 
     /**
-     * 发送验证码并返回过期信息。
+     * 发送验证码，相应验证码有效期等信息。
      * <p>
-     * 注册场景要求标识（账号）不存在；登录/重置密码场景要求标识（账号）存在。
+     * 注册场景要求标识（账号）不存在；
+     * 登录/重置密码场景要求标识（账号）存在。
      *
      * @param request 请求体，包含：标识类型与值、场景。
      * @return 响应体，包含目标标识、场景与验证码过期秒数。
      * @throws BusinessException 当标识格式错误或存在性不符合场景要求时抛出。
      */
     public SendCodeResponse sendCode(SendCodeRequest request) {
-        // 提取方法，进行分标识类型校验
-        // 对传过来的标识值，基于标识类型进行分类校验
+        // 参数合理校验以及标准化：
+        // 基于标识类型（手机号，邮箱），对传过来的标识值进行参数校验（是否为空，格式是否正确）
         validateIdentifier(request.identifierType(), request.identifier());
-
-        // 对传过来的标识值，基于标识类型进行分类标准化，得到标准化之后的标识值
+        // 基于标识类型，对不同类型的标识值进行标准化，也就是参数标准化（去空白字符或者英文小写化）
         String normalized = normalizeIdentifier(request.identifierType(), request.identifier());
 
-        // 判断该标识也就是该账户是否已存在
-        boolean exists = identifierExists(request.identifierType(), normalized);
 
-        // 注册场景，该标识若已存在，抛出异常
+        // 参数校验完成，接下来进行判断该标识（账户）是否存在
+        // 需求是不同的：注册场景的话，标识（账号）必须不存在；登录/重置密码场景要求标识（账号）必须存在。
+        // 设计一个方法针对验证码不同的使用场景，判断是否可以发送验证码
+        boolean exists = identifierExists(request.identifierType(), normalized);
+        // 若是注册场景同时该标识（账号）已存在，就抛出异常，不允许发送验证码
         if (request.scene() == VerificationScene.REGISTER && exists) {
             throw new BusinessException(ErrorCode.IDENTIFIER_EXISTS);
         }
-        // 登录/重置密码场景，该标识不存在，抛出异常
+        // 若是登录/重置密码场景，该标识（账号）不存在，抛出异常，不允许发送验证码
         if ((request.scene() == VerificationScene.LOGIN || request.scene() == VerificationScene.RESET_PASSWORD) && !exists) {
             throw new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND);
         }
 
-        // 该标识符合各场景要求，可发送验证码
+        // 校验完毕，该标识（账号）符合要求了，也就是可以发送验证码，就进行发送
         SendCodeResult result = verificationService.sendCode(request.scene(), normalized);
 
+        // 响应结果
         return new SendCodeResponse(result.identifier(), result.scene(), result.expireSeconds());
     }
 
     /**
      * 注册用户并签发令牌。
      * <p>
-     * 验证标识与验证码，创建用户（可选设置密码），记录审计，签发令牌对并保存刷新令牌白名单。
+     * 验证标识（账号）与验证码，创建用户（可选设置密码），记录审计，签发令牌对并保存刷新令牌 refreshToken 进白名单。
      *
-     * @param request    注册请求，包含：标识类型与值、验证码、可选密码、是否同意协议。
+     * @param request    注册请求，包含：标识（账号）类型与值、验证码、可选密码、是否同意协议。
      * @param clientInfo 客户端信息（IP/UA），用于登录审计。
      * @return 认证响应，包含用户信息与令牌对。
      * @throws BusinessException 当未同意协议、标识冲突、验证码失败、密码不合规时抛出。
      */
     public AuthResponse register(RegisterRequest request, ClientInfo clientInfo) {
-        // 判断是否同意协议
+        // 判断用户是否同意协议
         if (!request.agreeTerms()) {
             throw new BusinessException(ErrorCode.TERMS_NOT_ACCEPTED);
         }
-        // 基于标识类型，对标识值进行校验
+
+        // 基于标识类型（手机号，邮箱），对传过来的标识值进行参数校验（是否为空，格式是否正确）
         validateIdentifier(request.identifierType(), request.identifier());
-        // 基于标识类型，对标识值进行标准化
+        // 基于标识类型，对不同类型的标识值进行标准化，也就是参数标准化（去空白字符或者英文小写化）
         String identifier = normalizeIdentifier(request.identifierType(), request.identifier());
-        // 判断该标识是否存在，若存在，抛出异常
+        // 判断该标识是否存在，因为是注册场景，若标识存在，也就是注册过，直接抛出异常
         if (identifierExists(request.identifierType(), identifier)) {
             throw new BusinessException(ErrorCode.IDENTIFIER_EXISTS);
         }
-        // 验证码校验
+
+        // 调用验证码服务，进行验证码校验，返回的是验证码校验结果
+        // 返回结果包含校验状态（成功/未找到/过期/不匹配/尝试次数过多）和次数统计信息（尝试次数、最大尝试次数）
+        // 对这个返回的结果进行判断，是否校验成功
         ensureVerificationSuccess(verificationService.verify(VerificationScene.REGISTER, identifier, request.code()));
 
+        // 走到这里也就验证码验证成功了
         // 构造 User 对象
         User user = User.builder()
                 .phone(request.identifierType() == IdentifierType.PHONE ? identifier : null)
                 .email(request.identifierType() == IdentifierType.EMAIL ? identifier : null)
                 .nickname(generateNickname()) // 设置默认名字
-                .avatar("https://static.zhiguang.cn/default-avatar.png")
-                .bio(null)
-                .tagsJson("[]")
+                .avatar("https://static.zhiguang.cn/default-avatar.png") // 设置默认头像 URL
+                .bio(null) // 默认设置，个人简介为空
+                .tagsJson("[]") // 标签为空
                 .build();
-
         // 若用户传过来密码，校验密码策略：非空、最小长度、必须包含字母和数字
         if (StringUtils.hasText(request.password())) {
             validatePassword(request.password());
-            // 对明文密码加密
+            // 调用对明文密码编码器，对密码进行加密
             user.setPasswordHash(passwordEncoder.encode(request.password().trim()));
         }
+
         // 操作持久层创建用户
         userService.createUser(user);
 
+        // 调用 JWT 令牌服务，签发令牌对
         TokenPair tokenPair = jwtService.issueTokenPair(user);
+        // 保存 refreshToken 进白名单，白名单中的 Key 为："auth:rt:userId:tokenId"
         storeRefreshToken(user.getId(), tokenPair);
+
+        // 插入日志
         loginLogService.record(user.getId(), identifier, "REGISTER", clientInfo.ip(), clientInfo.userAgent(), "SUCCESS");
 
+        // 响应包装信息，包含用户信息以及 token 信息
         return new AuthResponse(mapUser(user), mapToken(tokenPair));
     }
 
@@ -190,35 +203,55 @@ public class AuthService {
      * @throws BusinessException 当用户不存在、凭证错误或请求不合法时抛出。
      */
     public AuthResponse login(LoginRequest request, ClientInfo clientInfo) {
-        // 校验标识（手机号/邮箱）的格式。
+        // 参数合理校验以及标准化：
+        // 基于标识类型（手机号，邮箱），对传过来的标识值进行参数校验（是否为空，格式是否正确）
         validateIdentifier(request.identifierType(), request.identifier());
-        // 标准化标识文本：手机号去空格、邮箱转小写并去空格。
+        // 基于标识类型，对不同类型的标识值进行标准化，也就是参数标准化（去空白字符或者英文小写化）
         String identifier = normalizeIdentifier(request.identifierType(), request.identifier());
-        // 基于标识类型+标识文本，查询用户
+
+        // 基于标识（账号）类型+标识值，查询用户
+        // 上面的注册只需要判断用户是否存在，这里是直接查询用户出来，要进行密码的比对，同时也可以进行判断用户是否存在
         Optional<User> userOptional = findUserByIdentifier(request.identifierType(), identifier);
-        // 若不存在该用户，抛异常
+        // 若该用户不存在，抛异常
         if (userOptional.isEmpty()) {
             throw new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND);
         }
+
         // 查询到该用户
         User user = userOptional.get();
 
+        // 登录的渠道两种：密码登录，验证码登录
         String channel;
         if (StringUtils.hasText(request.password())) {
+            // 如果请求参数包含密码，也就是密码登录
             channel = "PASSWORD";
+            // 如果查出来的用户，密码字段为空（用户没有设置密码）或者输入的密码与数据库中的密码不匹配
+            // 直接抛出异常
             if (!StringUtils.hasText(user.getPasswordHash()) || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+                // 密码登录错误了才记录错误日志
                 loginLogService.record(user.getId(), identifier, channel, clientInfo.ip(), clientInfo.userAgent(), "FAILED");
+                // 登录凭证错误
                 throw new BusinessException(ErrorCode.INVALID_CREDENTIALS);
             }
         } else if (StringUtils.hasText(request.code())) {
+            // 通过验证码登录
             channel = "CODE";
+            // 调用方法，确保验证码是校验通过的，若未通过已经抛出异常，结束了；若通过继续正常的逻辑
+            // TODO 验证码错误时没有记录错误日志
             ensureVerificationSuccess(verificationService.verify(VerificationScene.LOGIN, identifier, request.code()));
         } else {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请提供验证码或密码");
         }
+
+        // 到这里，也就是登录成功，签发 token
         TokenPair tokenPair = jwtService.issueTokenPair(user);
+        // 将 refreshToken 保存到白名单
         storeRefreshToken(user.getId(), tokenPair);
+
+        // 记录日志
         loginLogService.record(user.getId(), identifier, channel, clientInfo.ip(), clientInfo.userAgent(), "SUCCESS");
+
+        // 响应包装信息，包含用户信息以及 token 信息
         return new AuthResponse(mapUser(user), mapToken(tokenPair));
     }
 
@@ -232,24 +265,35 @@ public class AuthService {
      * @throws BusinessException 当刷新令牌无效或用户不存在时抛出。
      */
     public TokenResponse refresh(TokenRefreshRequest request) {
+        // 参数为刷新令牌，调用 JWT 令牌服务，解码刷新令牌，也就是从 token -> Jwt
         Jwt jwt = decodeRefreshToken(request.refreshToken());
 
-        if (!Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
+        // 判断这个 token 是否有效，以及判断这个 token 的类型是否为刷新令牌 refreshToken，不是的话直接报错
+        if (jwt == null ||!Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
         }
 
+        // 提取 userId ， tokenId
         long userId = jwtService.extractUserId(jwt);
         String tokenId = jwtService.extractTokenId(jwt);
 
+        // 判断传过来的这个即将过期的 refreshToken 是否有效，也就是查询白名单中是否有这个 token
+        // 若不存在，也就是这个 refreshToken 是无效的
         if (!refreshTokenStore.isTokenValid(userId, tokenId)) {
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
         }
 
+        // 基于从 token 中提取的这个 userId 查询用户，判断用户是否存在，若不存在直接报错
         User user = findUserById(userId).orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
+        // 用户查询成功，签发新的 token
         TokenPair tokenPair = jwtService.issueTokenPair(user);
+
+        // 将旧的 refreshToken 移出白名单
         refreshTokenStore.revokeToken(userId, tokenId);
+        // 添加新生成的 refreshToken 到白名单中
         storeRefreshToken(userId, tokenPair);
 
+        // 响应新签发的新的 token 信息
         return mapToken(tokenPair);
     }
 
@@ -300,8 +344,11 @@ public class AuthService {
     }
 
     /**
-     * 保证验证码校验成功，否则按状态抛出对应业务异常。
      *
+     * 验证码校验之后，返回的是验证码校验结果
+     * 对这个验证码结果进行解析，判断是否校验成功
+     * 若验证失败直接抛异常
+     * 若验证成功，正常执行后续逻辑
      * @param result 验证码校验结果。
      */
     private void ensureVerificationSuccess(VerificationCheckResult result) {
@@ -325,7 +372,7 @@ public class AuthService {
     }
 
     /**
-     * 校验标识（手机号/邮箱）的格式。
+     * 基于标识类型，校验标识（手机号/邮箱）格式是否正确。
      *
      * @param type       标识类型：PHONE 或 EMAIL。
      * @param identifier 标识值。
@@ -362,7 +409,7 @@ public class AuthService {
     }
 
     /**
-     * 判断标识是否已存在。
+     * 查询数据库，判断标识（账号）是否存在。
      *
      * @param type       标识类型：PHONE 或 EMAIL。
      * @param identifier 标识值（需为标准化格式）。
@@ -414,48 +461,25 @@ public class AuthService {
     }
 
     /**
-     * 存储刷新令牌白名单记录。
+     * 存储刷新令牌，添加到白名单记录。
      *
      * @param userId    用户 ID。
      * @param tokenPair 令牌对（含刷新令牌 ID 与过期时间）。
      */
     private void storeRefreshToken(Long userId, TokenPair tokenPair) {
+        // 获取当前时间的时间戳以及 refreshToken 的过期时间戳，计算两个时间点之间的时间差，返回一个 Duration 对象
+        // 也就是得到 refreshToken 还有多久过期的时间间隔
         Duration ttl = Duration.between(Instant.now(), tokenPair.refreshTokenExpiresAt());
+
+        // 如果时间间隔为负数，就将其设置为零，ttl 是存储到 Redis 中的 Key 的过期时间，不可以为负数否则报错
+        // 这里进行健壮性检查
         if (ttl.isNegative()) {
+            // 如果过期时间为 0 ，这个 refreshToken 设置后立即被删除，也就是不存在
             ttl = Duration.ZERO;
         }
+
+        // 将 refreshToken 存到白名单中，Key 为 refreshToken 的 tokenId
         refreshTokenStore.storeToken(userId, tokenPair.refreshTokenId(), ttl);
-    }
-
-    /**
-     * 映射用户实体到响应对象。
-     *
-     * @param user 用户实体。
-     * @return 用户响应。
-     */
-    private AuthUserResponse mapUser(User user) {
-        return new AuthUserResponse(
-                user.getId(),
-                user.getNickname(),
-                user.getAvatar(),
-                user.getPhone(),
-                user.getZgId(),
-                user.getBirthday(),
-                user.getSchool(),
-                user.getBio(),
-                user.getGender(),
-                user.getTagsJson()
-        );
-    }
-
-    /**
-     * 映射令牌对到响应对象。
-     *
-     * @param tokenPair 令牌对。
-     * @return 令牌响应。
-     */
-    private TokenResponse mapToken(TokenPair tokenPair) {
-        return new TokenResponse(tokenPair.accessToken(), tokenPair.accessTokenExpiresAt(), tokenPair.refreshToken(), tokenPair.refreshTokenExpiresAt());
     }
 
     /**
@@ -493,5 +517,37 @@ public class AuthService {
         } catch (JwtException ex) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * 映射用户实体到响应对象。
+     *
+     * @param user 用户实体。
+     * @return 用户响应。
+     */
+    private AuthUserResponse mapUser(User user) {
+        // 响应一个脱敏的用户对象
+        return new AuthUserResponse(
+                user.getId(),
+                user.getNickname(),
+                user.getAvatar(),
+                user.getPhone(),
+                user.getZgId(),
+                user.getBirthday(),
+                user.getSchool(),
+                user.getBio(),
+                user.getGender(),
+                user.getTagsJson()
+        );
+    }
+
+    /**
+     * 映射令牌对到响应对象。
+     *
+     * @param tokenPair 令牌对。
+     * @return 令牌响应。
+     */
+    private TokenResponse mapToken(TokenPair tokenPair) {
+        return new TokenResponse(tokenPair.accessToken(), tokenPair.accessTokenExpiresAt(), tokenPair.refreshToken(), tokenPair.refreshTokenExpiresAt());
     }
 }

@@ -105,6 +105,7 @@ public class RedisVerificationCodeStore implements VerificationCodeStore {
         if (attempts >= maxAttempts) {
             return new VerificationCheckResult(VerificationCodeStatus.TOO_MANY_ATTEMPTS, attempts, maxAttempts);
         }
+
         // 尝试次数未达上限，然后进行验证码匹配，若成功，删除该验证码的缓存，返回成功响应
         if (Objects.equals(storedCode, code)) {
             redisTemplate.delete(key);

@@ -36,6 +36,8 @@ public class LoginLogService {
                 .status(status)
                 .createdAt(Instant.now())
                 .build();
+
+        // 插入登录日志
         loginLogMapper.insert(log);
     }
 }

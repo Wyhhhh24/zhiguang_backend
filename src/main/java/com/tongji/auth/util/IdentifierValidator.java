@@ -23,7 +23,7 @@ public final class IdentifierValidator {
     }
 
     /**
-     * 校验手机号格式（中国大陆 11 位，以 1 开头）。
+     * 校验手机号格式（中国大陆 11 位，以 1 开头）是否正确。
      *
      * @param phone 手机号字符串。
      * @return 是否匹配手机号正则。
@@ -34,7 +34,7 @@ public final class IdentifierValidator {
     }
 
     /**
-     * 校验邮箱格式（大小写不敏感）。
+     * 校验邮箱格式（大小写不敏感）是否正确。
      *
      * @param email 邮箱字符串。
      * @return 是否匹配邮箱正则。
