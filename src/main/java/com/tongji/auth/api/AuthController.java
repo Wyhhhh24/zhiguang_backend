@@ -58,19 +58,22 @@ public class AuthController {
         return authService.sendCode(request);
     }
 
+
     /**
      * 注册新用户并自动登录。
      * <p>
      * 验证标识与验证码后创建用户，若提供密码则进行复杂度校验并保存密码哈希；成功后签发 Access/Refresh Token。
      *
-     * @param request     请求体，包含：标识类型与值、验证码、可选密码、是否同意协议。
+     * @param request     请求体，包含：标识类型与值、验证码、密码（选填）、是否同意协议。
      * @param httpRequest 用于解析客户端信息（IP 与 User-Agent），记录审计日志。
      * @return 认证响应，包含用户信息与令牌对。
      */
     @PostMapping("/register")
     public AuthResponse register(@Valid @RequestBody RegisterRequest request, HttpServletRequest httpRequest) {
+        // 通过 HttpServletRequest 对象获取客户端信息（IP 与 User-Agent）
         return authService.register(request, resolveClient(httpRequest));
     }
+
 
     /**
      * 登录并获取令牌对。
@@ -83,8 +86,10 @@ public class AuthController {
      */
     @PostMapping("/login")
     public AuthResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        // 通过 HttpServletRequest 对象获取客户端信息（IP 与 User-Agent）
         return authService.login(request, resolveClient(httpRequest));
     }
+
 
     /**
      * 使用 Refresh Token 刷新令牌。
@@ -99,9 +104,11 @@ public class AuthController {
         return authService.refresh(request);
     }
 
+
     /**
      * 登出并撤销刷新令牌。
      * <p>
+     * 传的参数只需要 refreshToken
      * 若提供的令牌为合法的 Refresh Token，则撤销其白名单记录；返回 204，无响应体。
      *
      * @param request 请求体，包含：refreshToken（欲撤销的刷新令牌）。
@@ -110,8 +117,11 @@ public class AuthController {
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(@Valid @RequestBody LogoutRequest request) {
         authService.logout(request.refreshToken());
+        // 专门用于创建一个 HTTP 204 No Content 状态码的响应对象。
+        // 简单来说，它的意思是：“请求成功处理了，但现在没什么东西需要返回给你。”
         return ResponseEntity.noContent().build();
     }
+
 
     /**
      * 使用验证码重置密码。
@@ -124,8 +134,11 @@ public class AuthController {
     @PostMapping("/password/reset")
     public ResponseEntity<Void> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
         authService.resetPassword(request);
+        // 专门用于创建一个 HTTP 204 No Content 状态码的响应对象。
+        // 简单来说，它的意思是：“请求成功处理了，但现在没什么东西需要返回给你。”
         return ResponseEntity.noContent().build();
     }
+
 
     /**
      * 查询当前登录用户信息。
@@ -140,6 +153,7 @@ public class AuthController {
         long userId = jwtService.extractUserId(jwt);
         return authService.me(userId);
     }
+
 
     /**
      * 从请求中解析客户端信息。

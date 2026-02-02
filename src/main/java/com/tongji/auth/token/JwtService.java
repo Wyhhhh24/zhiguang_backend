@@ -64,7 +64,7 @@ public class JwtService {
 
     /**
      * 解码 JWT 字符串为 {@link Jwt}。
-     *
+     * 将用户传过来的 token 通过注册号的 JWT 的解码器，解码为 JWT 对象，可以通过这个 JWT 对象判断这个 token 是否有效
      * @param token JWT 字符串。
      * @return 解析后的 JWT 对象。
      */

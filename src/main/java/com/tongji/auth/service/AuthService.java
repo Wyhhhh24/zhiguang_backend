@@ -256,16 +256,16 @@ public class AuthService {
     }
 
     /**
-     * 使用刷新令牌获取新的令牌对。
+     * 使用刷新令牌获取新的令牌对（accessToken，refreshToken）。
      * <p>
      * 校验刷新令牌类型与白名单有效性，签发新令牌后撤销旧刷新令牌并存储新令牌。
      *
-     * @param request 刷新请求，包含：refreshToken。
-     * @return 新的令牌响应。
+     * @param request 刷新请求，需携带 refreshToken。
+     * @return 新的令牌对响应。
      * @throws BusinessException 当刷新令牌无效或用户不存在时抛出。
      */
     public TokenResponse refresh(TokenRefreshRequest request) {
-        // 参数为刷新令牌，调用 JWT 令牌服务，解码刷新令牌，也就是从 token -> Jwt
+        // 参数为刷新令牌，调用 JWT 令牌服务，解码 refreshToken，也就是从 token 转换为 Jwt 对象
         Jwt jwt = decodeRefreshToken(request.refreshToken());
 
         // 判断这个 token 是否有效，以及判断这个 token 的类型是否为刷新令牌 refreshToken，不是的话直接报错
@@ -277,7 +277,7 @@ public class AuthService {
         long userId = jwtService.extractUserId(jwt);
         String tokenId = jwtService.extractTokenId(jwt);
 
-        // 判断传过来的这个即将过期的 refreshToken 是否有效，也就是查询白名单中是否有这个 token
+        // 判断传过来的这个 refreshToken 是否有效，也就是查询白名单中是否有这个 token
         // 若不存在，也就是这个 refreshToken 是无效的
         if (!refreshTokenStore.isTokenValid(userId, tokenId)) {
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
@@ -285,7 +285,7 @@ public class AuthService {
 
         // 基于从 token 中提取的这个 userId 查询用户，判断用户是否存在，若不存在直接报错
         User user = findUserById(userId).orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
-        // 用户查询成功，签发新的 token
+        // 用户查询成功，签发新的 token 对（accessToken，refreshToken）
         TokenPair tokenPair = jwtService.issueTokenPair(user);
 
         // 将旧的 refreshToken 移出白名单
@@ -293,17 +293,19 @@ public class AuthService {
         // 添加新生成的 refreshToken 到白名单中
         storeRefreshToken(userId, tokenPair);
 
-        // 响应新签发的新的 token 信息
+        // 响应新签发的新的 token 信息，包含新的 accessToken 、 refreshToken
         return mapToken(tokenPair);
     }
 
     /**
-     * 登出：撤销指定刷新令牌。
+     * 登出：撤销指定刷新令牌，也就是将该 refreshToken 移出白名单。
      *
      * @param refreshToken 刷新令牌字符串；若解析为合法刷新令牌则撤销其白名单记录。
      */
     public void logout(String refreshToken) {
+        // 解码这个 refreshToken ，若成功就返回 Optional<Jwt> 对象
         decodeRefreshTokenSafely(refreshToken).ifPresent(jwt -> {
+            // 通过 Jwt 对象，提取 token 的类型，判断是否是 refresh，若是的话，就将其移出白名单
             if (Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
                 long userId = jwtService.extractUserId(jwt);
                 String tokenId = jwtService.extractTokenId(jwt);
@@ -312,6 +314,7 @@ public class AuthService {
         });
     }
 
+
     /**
      * 使用验证码重置密码并使刷新令牌失效。
      *
@@ -319,16 +322,26 @@ public class AuthService {
      * @throws BusinessException 当标识不存在、验证码失败或密码策略不满足时抛出。
      */
     public void resetPassword(PasswordResetRequest request) {
+        // 基于标识类型（手机号，邮箱），对传过来的标识值进行参数校验（是否为空，格式是否正确）
         validateIdentifier(request.identifierType(), request.identifier());
+        // 校验用户输入的新密码是否符合格式
         validatePassword(request.newPassword());
+        // 基于标识类型，对不同类型的标识值进行标准化，也就是参数标准化（去空白字符或者英文小写化）
         String identifier = normalizeIdentifier(request.identifierType(), request.identifier());
+        // 基于标识查询用户，若查不到即抛出异常
         User user = findUserByIdentifier(request.identifierType(), identifier)
                 .orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
+        // 确保用户验证码输入正确，只有正确才会继续执行下面的逻辑，否则这个方法中会抛出异常
         ensureVerificationSuccess(verificationService.verify(VerificationScene.RESET_PASSWORD, identifier, request.code()));
+        // .trim() 切除字符串两端的“隐形胡须”——也就是空格、制表符等空白字符
         user.setPasswordHash(passwordEncoder.encode(request.newPassword().trim()));
+
+        // 更新数据库
         userService.updatePassword(user);
+        // 因为重置密码了，所以撤销用户的所有刷新令牌（强制该用户所有会话下线）
         refreshTokenStore.revokeAll(user.getId());
     }
+
 
     /**
      * 查询用户概要信息。
@@ -338,17 +351,68 @@ public class AuthService {
      * @throws BusinessException 当用户不存在时抛出。
      */
     public AuthUserResponse me(long userId) {
+        // 基于 userId 查询用户，若查询不到即抛异常
         User user = findUserById(userId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
+        // 返回脱敏的用户信息
         return mapUser(user);
     }
 
+
+
     /**
+     * 基于标识类型，校验标识（手机号/邮箱）格式是否正确。
      *
+     * @param type       标识类型：PHONE 或 EMAIL。
+     * @param identifier 标识值。
+     * @throws BusinessException 当格式不合法时抛出。
+     */
+    private void validateIdentifier(IdentifierType type, String identifier) {
+        if (type == IdentifierType.PHONE && !IdentifierValidator.isValidPhone(identifier)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "手机号格式错误");
+        }
+        if (type == IdentifierType.EMAIL && !IdentifierValidator.isValidEmail(identifier)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "邮箱格式错误");
+        }
+    }
+
+
+    /**
+     * 标准化标识文本：手机号去空格、邮箱转小写并去空格。
+     *
+     * @param type       标识类型：PHONE 或 EMAIL。
+     * @param identifier 原始标识文本。
+     * @return 标准化后的标识文本。
+     */
+    private String normalizeIdentifier(IdentifierType type, String identifier) {
+        return switch (type) {
+            case PHONE -> identifier.trim();
+            case EMAIL -> identifier.trim().toLowerCase(Locale.ROOT);
+        };
+    }
+
+
+    /**
+     * 查询数据库，判断标识（账号）是否存在。
+     *
+     * @param type       标识类型：PHONE 或 EMAIL。
+     * @param identifier 标识值（需为标准化格式）。
+     * @return 是否存在。
+     */
+    private boolean identifierExists(IdentifierType type, String identifier) {
+        return switch (type) {
+            case PHONE -> userService.existsByPhone(identifier);
+            case EMAIL -> userService.existsByEmail(identifier);
+        };
+    }
+
+
+    /**
      * 验证码校验之后，返回的是验证码校验结果
-     * 对这个验证码结果进行解析，判断是否校验成功
+     * 传入验证码校验结果进这个方法中
+     * 这个方法就是进行校验这个结果的
      * 若验证失败直接抛异常
-     * 若验证成功，正常执行后续逻辑
+     * 若均验证成功，跳出这个方法回到原先代码逻辑中，正常执行后续逻辑
      * @param result 验证码校验结果。
      */
     private void ensureVerificationSuccess(VerificationCheckResult result) {
@@ -371,21 +435,6 @@ public class AuthService {
         throw new BusinessException(ErrorCode.BAD_REQUEST, "验证码校验失败");
     }
 
-    /**
-     * 基于标识类型，校验标识（手机号/邮箱）格式是否正确。
-     *
-     * @param type       标识类型：PHONE 或 EMAIL。
-     * @param identifier 标识值。
-     * @throws BusinessException 当格式不合法时抛出。
-     */
-    private void validateIdentifier(IdentifierType type, String identifier) {
-        if (type == IdentifierType.PHONE && !IdentifierValidator.isValidPhone(identifier)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "手机号格式错误");
-        }
-        if (type == IdentifierType.EMAIL && !IdentifierValidator.isValidEmail(identifier)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "邮箱格式错误");
-        }
-    }
 
     /**
      * 校验密码策略：非空、最小长度、必须包含字母和数字。
@@ -394,13 +443,21 @@ public class AuthService {
      * @throws BusinessException 当密码不满足策略时抛出。
      */
     private void validatePassword(String password) {
+        // 密码不能为空
         if (!StringUtils.hasText(password)) {
             throw new BusinessException(ErrorCode.PASSWORD_POLICY_VIOLATION, "密码不能为空");
         }
+        // 去掉字符串两端的空格，获取有效的密码字符串
         String trimmed = password.trim();
+        // 判断密码长度
         if (trimmed.length() < authProperties.getPassword().getMinLength()) {
             throw new BusinessException(ErrorCode.PASSWORD_POLICY_VIOLATION, "密码长度至少" + authProperties.getPassword().getMinLength() + "位");
         }
+        // .chars(): 把字符串拆解成一个“字符流”（想象成传送带上一个个飞过去的字符）。
+        // .anyMatch(...): 只要流中有一个字符满足条件，就返回 true。
+        // Character::isLetter: 这是一个判定标准，检查字符是不是 A-Z 或 a-z。
+        // Character::isDigit: 判定标准变为检查字符是不是 0-9。
+        // 结果：如果密码里哪怕只有一个字母，它就是 true；如果全是数字或符号，就是 false。如果密码里包含至少一个数字，返回 true。
         boolean hasLetter = trimmed.chars().anyMatch(Character::isLetter);
         boolean hasDigit = trimmed.chars().anyMatch(Character::isDigit);
         if (!hasLetter || !hasDigit) {
@@ -408,22 +465,10 @@ public class AuthService {
         }
     }
 
-    /**
-     * 查询数据库，判断标识（账号）是否存在。
-     *
-     * @param type       标识类型：PHONE 或 EMAIL。
-     * @param identifier 标识值（需为标准化格式）。
-     * @return 是否存在。
-     */
-    private boolean identifierExists(IdentifierType type, String identifier) {
-        return switch (type) {
-            case PHONE -> userService.existsByPhone(identifier);
-            case EMAIL -> userService.existsByEmail(identifier);
-        };
-    }
 
     /**
      * 根据标识查找用户。
+     * 有不同的标识类型（手机号、邮箱），所以整合这个方法
      *
      * @param type       标识类型：PHONE 或 EMAIL。
      * @param identifier 标识值（需为标准化格式）。
@@ -436,6 +481,7 @@ public class AuthService {
         };
     }
 
+
     /**
      * 根据 ID 查找用户。
      *
@@ -446,22 +492,12 @@ public class AuthService {
         return userService.findById(userId);
     }
 
-    /**
-     * 标准化标识文本：手机号去空格、邮箱转小写并去空格。
-     *
-     * @param type       标识类型：PHONE 或 EMAIL。
-     * @param identifier 原始标识文本。
-     * @return 标准化后的标识文本。
-     */
-    private String normalizeIdentifier(IdentifierType type, String identifier) {
-        return switch (type) {
-            case PHONE -> identifier.trim();
-            case EMAIL -> identifier.trim().toLowerCase(Locale.ROOT);
-        };
-    }
 
     /**
      * 存储刷新令牌，添加到白名单记录。
+     * 参数为 TokenPair 令牌对对象以及 userId
+     * 多个方法需要存储刷新令牌
+     * 提取出这个方法，功能抽取，减少重复代码的编写
      *
      * @param userId    用户 ID。
      * @param tokenPair 令牌对（含刷新令牌 ID 与过期时间）。
@@ -482,17 +518,11 @@ public class AuthService {
         refreshTokenStore.storeToken(userId, tokenPair.refreshTokenId(), ttl);
     }
 
-    /**
-     * 生成默认昵称。
-     *
-     * @return 随机昵称字符串。
-     */
-    private String generateNickname() {
-        return "知光用户" + UUID.randomUUID().toString().substring(0, 8);
-    }
 
     /**
      * 解码刷新令牌，失败时抛业务异常。
+     * 调用 JWT 令牌服务对 token 进行解码，获取 JWT 对象
+     * 若解码失败抛出异常
      *
      * @param refreshToken 刷新令牌字符串。
      * @return 解析得到的 JWT。
@@ -506,8 +536,20 @@ public class AuthService {
         }
     }
 
+
     /**
-     * 解码刷新令牌，失败时返回空 Optional。
+     * 生成默认昵称。
+     *
+     * @return 随机昵称字符串。
+     */
+    private String generateNickname() {
+        return "知光用户" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+
+    /**
+     * （安全版）解码刷新令牌，返回 Optional 对象
+     * 失败时返回空 Optional。
      * @param refreshToken 刷新令牌字符串。
      * @return 成功时返回 JWT，失败时返回 Optional.empty()。
      */
@@ -518,6 +560,7 @@ public class AuthService {
             return Optional.empty();
         }
     }
+
 
     /**
      * 映射用户实体到响应对象。
@@ -540,6 +583,7 @@ public class AuthService {
                 user.getTagsJson()
         );
     }
+
 
     /**
      * 映射令牌对到响应对象。
