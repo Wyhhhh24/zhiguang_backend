@@ -10,7 +10,8 @@ import com.tongji.auth.model.IdentifierType;
  * 支持两种渠道：
  * - 验证码登录：填写 `code`；
  * - 密码登录：填写 `password`（用户已设置时）。
- * `identifierType` 指定标识类型（手机号/邮箱），`identifier` 为标识值。
+ * `identifierType` 指定标识类型（手机号/邮箱），
+ * `identifier` 为标识值。
  */
 public record LoginRequest(
         @NotNull(message = "账号类型不能为空") IdentifierType identifierType,

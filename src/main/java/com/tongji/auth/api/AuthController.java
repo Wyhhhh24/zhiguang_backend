@@ -124,7 +124,7 @@ public class AuthController {
 
 
     /**
-     * 使用验证码重置密码。
+     * 使用验证码重置密码。（会将 refreshToken 移出白名单）
      * <p>
      * 验证标识与验证码后更新用户密码哈希，并撤销该用户所有刷新令牌以强制下线。
      *
@@ -156,7 +156,7 @@ public class AuthController {
 
 
     /**
-     * 从请求中解析客户端信息。
+     * 从 HttpServletRequest 中解析客户端信息。
      *
      * @param request HTTP 请求对象。
      * @return 客户端信息（IP 与 User-Agent）。
@@ -168,6 +168,7 @@ public class AuthController {
         String ua = request.getHeader("User-Agent");
         return new ClientInfo(ip, ua);
     }
+
 
     /**
      * 提取客户端 IP 地址。
