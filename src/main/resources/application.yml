@@ -124,12 +124,12 @@ logging:
     '[com.tongji]': DEBUG
 
 oss:
-  endpoint: oss-cn-beijing.aliyuncs.com
+  endpoint: oss-cn-shenzhen.aliyuncs.com
   access-key-id: ${OSS_ACCESS_KEY_ID}
   access-key-secret: ${OSS_ACCESS_KEY_SECRET}
-  bucket: zhiguangapp
-  public-domain: ${OSS_PUBLIC_DOMAIN:}
-  folder: avatars
+  bucket: air-zhiguang
+  public-domain: ${OSS_PUBLIC_DOMAIN:} # 选填，自己绑定的自定义域名
+  folder: avatars # 默认上传目录
 
 cache:
   l2:
