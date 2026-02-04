@@ -48,7 +48,8 @@ public interface UserMapper {
     void updateProfile(User user);
 
     /**
-     * 判断该业务存在该业务标识Id的用户
+     * 判断是否存在该业务标识 Id 的用户，需排除当前用户
+     * 该方法就是用来判断，是否有其它用户的业务标识 Id 是一样，从除了当前用户的所有用户中进行选择
      */
     boolean existsByZgIdExceptId(@Param("zgId") String zgId, @Param("excludeId") Long excludeId);
 

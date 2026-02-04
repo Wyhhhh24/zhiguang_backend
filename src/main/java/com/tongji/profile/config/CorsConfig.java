@@ -8,6 +8,16 @@ import org.springframework.web.filter.CorsFilter;
 
 import java.util.List;
 
+/**
+ * 跨域配置
+ * GET 和 POST 在特定条件下属于浏览器定义的简单请求，不会触发 CORS 预检；
+ * 而 PATCH 属于非简单请求，会先发送 OPTIONS 预检请求。
+ * 如果后端未正确配置 CORS 或未放行 OPTIONS，请求就会被浏览器拦截，接口就无法请求成功。
+ * 该配置解决：解决浏览器跨域请求被拦截的问题，特别是针对像 PATCH 这样的非简单请求，确保其能正常发送和接收响应。
+ * 前端发送 PATCH 请求到 /api/v1/profile/update时，浏览器会先发送 OPTIONS 预检请求。
+ * 此配置的作用：放行 OPTIONS 预检请求，返回正确的 CORS 响应头
+ * 浏览器看到这些响应头后：知道服务器允许跨域，知道允许 PATCH 方法，在 3600 秒内不会对同一 URL 再发预检，然后才发送实际的 PATCH 请求
+ */
 @Configuration
 public class CorsConfig {
 

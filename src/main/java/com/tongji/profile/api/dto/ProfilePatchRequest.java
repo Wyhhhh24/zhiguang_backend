@@ -17,5 +17,5 @@ public record ProfilePatchRequest(
         @PastOrPresent(message = "生日不能晚于今天") LocalDate birthday,
         @Pattern(regexp = "^[a-zA-Z0-9_]{4,32}$", message = "知光号仅支持字母、数字、下划线，长度 4-32") String zgId,
         @Size(max = 128, message = "学校名称长度不能超过 128") String school,
-        String tagJson
+        String tagJson  // 灵活扩展字段，存储用户标签
 ){ }

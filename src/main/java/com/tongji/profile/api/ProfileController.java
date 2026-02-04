@@ -30,8 +30,19 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class ProfileController {
 
+    /**
+     * 个人资料服务
+     */
     private final ProfileService profileService;
+
+    /**
+     * JWT 令牌服务
+     */
     private final JwtService jwtService;
+
+    /**
+     * OSS 对象存储服务
+     */
     private final OssStorageService ossStorageService;
 
     /**
@@ -47,8 +58,10 @@ public class ProfileController {
     @PatchMapping
     public ProfileResponse patch(@AuthenticationPrincipal Jwt jwt,
                                  @Valid @RequestBody ProfilePatchRequest request) {
+        // 框架提取请求头中的 token，并验签、解析得到 JWT 对象，注入到请求参数中，即可提取 JWT 中的用户 Id 了
         long userId = jwtService.extractUserId(jwt);
 
+        // 更新个人资料
         return profileService.updateProfile(userId, request);
     }
 
@@ -64,9 +77,13 @@ public class ProfileController {
     @PostMapping("/avatar")
     public ProfileResponse uploadAvatar(@AuthenticationPrincipal Jwt jwt,
                                         @RequestPart("file") MultipartFile file) {
+        // 框架提取请求头中的 token，并验签、解析得到 JWT 对象，注入到请求参数中，即可提取 JWT 中的用户 Id 了
         long userId = jwtService.extractUserId(jwt);
+
+        // 调用 OSS 对象存储服务，将图片上传到服务中返回可用的 URL
         String url = ossStorageService.uploadAvatar(userId, file);
 
+        // 更新个人资料中的头像 URL ，将头像 URL 落库
         return profileService.updateAvatar(userId, url);
     }
 }
