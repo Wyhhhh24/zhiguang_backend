@@ -22,26 +22,39 @@ spring:
       port: 6379
       password: 123456
   kafka:
+    # Kafka 集群地址，多个地址用逗号隔开
     bootstrap-servers: localhost:9092
     template:
+      # 生产者默认发送的 Topic，如果不显式指定 Topic 则发送到这里
       default-topic: counter-events
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # 确认机制：all 表示消息必须写入所有副本(ISR)才算成功，安全性最高
       acks: all
+      # 消息发送失败后的重试次数
       retries: 3
+      # 消息发送延迟：在发送前等待 10ms，尽可能攒批发送以提高吞吐量
       linger: 10ms
       properties:
+        # 开启幂等性：确保即便重试也不会导致消息重复发送
         enable.idempotence: true
+        # 单个连接在阻塞前发送的未确认请求数：1 保证了严格的消息顺序性
         max.in.flight.requests.per.connection: 1
     consumer:
       group-id: counter-agg
+      # 消息 Key 的序列化方式（将 String 转为字节数组）
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # 消息 Value 的序列化方式
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # 偏移量重置策略：latest 表示从最新的消息开始消费；earliest 表示从最早的消息开始
       auto-offset-reset: latest
+      # 关闭自动提交：交由代码手动控制 Offset 提交，避免消息丢失或重复
       enable-auto-commit: false
     listener:
+      # 监听类型：single 表示单条消费；batch 表示批量消费
       type: single
+      # 确认模式：manual 表示由开发者在代码中调用 acknowledgment.acknowledge() 手动确认
       ack-mode: manual
   ai:
     deepseek:

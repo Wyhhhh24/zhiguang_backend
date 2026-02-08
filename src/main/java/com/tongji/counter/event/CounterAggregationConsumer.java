@@ -26,7 +26,9 @@ import java.util.List;
 public class CounterAggregationConsumer {
 
     private final ObjectMapper objectMapper;
+
     private final StringRedisTemplate redis;
+
     private final DefaultRedisScript<Long> incrScript;
 
     // 使用 Redis Hash 作为持久化聚合桶：agg:{schema}:{etype}:{eid} ，field=idx ，value=delta
@@ -46,6 +48,7 @@ public class CounterAggregationConsumer {
     @KafkaListener(topics = CounterTopics.EVENTS, groupId = "counter-agg")
     public void onMessage(String message, Acknowledgment ack) throws Exception {
         CounterEvent evt = objectMapper.readValue(message, CounterEvent.class);
+        // 构建聚合桶的 Key
         String aggKey = CounterKeys.aggKey(evt.getEntityType(), evt.getEntityId());
         String field = String.valueOf(evt.getIdx());
         try {

@@ -37,18 +37,27 @@ import java.util.concurrent.TimeUnit;
 public class CounterServiceImpl implements CounterService {
 
     private final StringRedisTemplate redis;
+
     private final DefaultRedisScript<Long> toggleScript;
+
     private final CounterEventProducer eventProducer;
+
     private final ApplicationEventPublisher eventPublisher;
+
     private final RedissonClient redisson;
+
     @Value("${counter.rebuild.lock.ttl-ms:5000}")
     private long lockTtlMs;
+
     @Value("${counter.rebuild.rate.permits:3}")
     private int ratePermits;
+
     @Value("${counter.rebuild.rate.window-seconds:10}")
     private int rateWindowSeconds;
+
     @Value("${counter.rebuild.backoff.base-ms:500}")
     private long backoffBaseMs;
+
     @Value("${counter.rebuild.backoff.max-ms:30000}")
     private long backoffMaxMs;
 
@@ -111,19 +120,29 @@ public class CounterServiceImpl implements CounterService {
      * @param add 是否置位（true=添加，false=移除）
      */
     private boolean toggle(String etype, String eid, long uid, String metric, int idx, boolean add) {
-        // 固定分片定位：按用户ID映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
+        // 固定分片定位：按用户 ID 映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
         long chunk = BitmapShard.chunkOf(uid);
-        // 分片内位偏移
+        // 分片内位的偏移
         long bit = BitmapShard.bitOf(uid);
+
+        // 构建分片键（Redis 中对应的键的名称）
         String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
+        // 构建执行 Lua 脚本时操作的对应 Key
         List<String> keys = List.of(bmKey);
+        // 构建执行 Lua 脚本时所需传的参数
         List<String> args = List.of(String.valueOf(bit), add ? "add" : "remove");
+        // 执行 Lua 脚本，获取返回值：1 执行成功 、0 无需执行、-1 参数错误
         Long changed = redis.execute(toggleScript, keys, args.toArray());
+        // 判断是否成功
         boolean ok = changed == 1L;
+        // 如果操作成功
         if (ok) {
+            // 判断添加还是移除，添加 1 ；移除 -1
             int delta = add ? 1 : -1;
             // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
+            // 确保同一实体的所有事件进入同一 Kafka 分区，保障事件顺序，且在消费端集中处理，避免跨分区乱序
             eventProducer.publish(CounterEvent.of(etype, eid, metric, idx, uid, delta));
+
             // 本地事件：触发缓存失效/旁路更新等快速路径
             eventPublisher.publishEvent(CounterEvent.of(etype, eid, metric, idx, uid, delta));
         }

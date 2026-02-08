@@ -10,11 +10,22 @@ import lombok.Data;
  */
 @Data
 public class CounterEvent {
+    // 实体类型（article、video 等）
     private String entityType;
+
+    // 实体 ID
     private String entityId;
-    private String metric; // like | fav（指标名称）
-    private int idx; // schema index（见 CounterSchema.NAME_TO_IDX）
+
+    // 行为指标（like、fav 等）
+    private String metric;
+
+    // schema index（见 CounterSchema.NAME_TO_IDX）
+    private int idx;
+
+    // 用户 ID
     private long userId;
+
+    // 增量
     private int delta; // +1 / -1
 
     public CounterEvent(String entityType, String entityId, String metric, int idx, long userId, int delta) {

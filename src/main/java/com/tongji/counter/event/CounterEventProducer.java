@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class CounterEventProducer {
     private final KafkaTemplate<String, String> kafka;
+
     private final ObjectMapper objectMapper;
 
     public CounterEventProducer(KafkaTemplate<String, String> kafka, ObjectMapper objectMapper) {
@@ -22,14 +23,16 @@ public class CounterEventProducer {
 
     /**
      * 发布计数事件到 Kafka。
-     * @param event 计数事件（实体类型、ID、指标、delta 等）
+     * @param event 计数事件（含实体类型、ID、指标、delta（+1 还是 -1）等）
      */
     public void publish(CounterEvent event) {
         try {
+            // 将事件转换为字符串，并发送事件
             String payload = objectMapper.writeValueAsString(event);
-            kafka.send(CounterTopics.EVENTS, payload); // 异步写入计数事件主题（幂等生产已在配置启用）
+            // 异步写入计数事件主题（幂等生产已在配置启用）
+            kafka.send(CounterTopics.EVENTS, payload);
         } catch (JsonProcessingException e) {
-            // 生产异常不抛出影响主流程；可接入告警
+            // 生产异常不抛出影响主流程；后续可接入告警
         }
     }
 }
