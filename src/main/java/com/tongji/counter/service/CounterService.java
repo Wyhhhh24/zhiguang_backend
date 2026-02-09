@@ -2,7 +2,9 @@ package com.tongji.counter.service;
 
 import java.util.List;
 import java.util.Map;
-
+/**
+ * 笔记维度计数服务接口
+ */
 public interface CounterService {
     /**
      * 点赞：仅在之前未点赞时置位并 +1。

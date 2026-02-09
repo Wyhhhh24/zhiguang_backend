@@ -121,16 +121,20 @@ public class CounterServiceImpl implements CounterService {
      */
     private boolean toggle(String etype, String eid, long uid, String metric, int idx, boolean add) {
         // 固定分片定位：按用户 ID 映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
+        // 获取用户所在的分片编号（userId / 32768）
         long chunk = BitmapShard.chunkOf(uid);
-        // 分片内位的偏移
+        // 获取用户在分片内的位偏移（userId % 32768）
         long bit = BitmapShard.bitOf(uid);
 
         // 构建分片键（Redis 中对应的键的名称）
         String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
-        // 构建执行 Lua 脚本时操作的对应 Key
+
+        // 构建执行 Lua 脚本时操作的对应 Key，也就是将键名放进 List 里面
         List<String> keys = List.of(bmKey);
-        // 构建执行 Lua 脚本时所需传的参数
+
+        // 构建执行 Lua 脚本时所需传的参数：对分片中的哪位进行操作（偏移量）、增量还是减量基于这两个字符串
         List<String> args = List.of(String.valueOf(bit), add ? "add" : "remove");
+
         // 执行 Lua 脚本，获取返回值：1 执行成功 、0 无需执行、-1 参数错误
         Long changed = redis.execute(toggleScript, keys, args.toArray());
         // 判断是否成功
@@ -138,6 +142,7 @@ public class CounterServiceImpl implements CounterService {
         // 如果操作成功
         if (ok) {
             // 判断添加还是移除，添加 1 ；移除 -1
+            // 得到增量还是减量操作数
             int delta = add ? 1 : -1;
             // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
             // 确保同一实体的所有事件进入同一 Kafka 分区，保障事件顺序，且在消费端集中处理，避免跨分区乱序
@@ -155,17 +160,33 @@ public class CounterServiceImpl implements CounterService {
      */
     @Override
     public Map<String, Long> getCounts(String entityType, String entityId, List<String> metrics) {
+        // 一、检查数据完整性
+        // 构建该 entityType+entityId 对应的 Key
         String sdsKey = CounterKeys.sdsKey(entityType, entityId);
+        // 计算预期的位数
         int expectedLen = CounterSchema.SCHEMA_LEN * CounterSchema.FIELD_SIZE;
+        // Redis 的 value 是一个 string（SDS），但其内部是一个自定义的二进制数组；
+        // 每个计数字段固定占 4 字节；
+        // 字段值使用 32-bit 整数表示，并且统一采用大端字节序存储。
+        // 读取 SDS 原始字节
         // SDS 固定结构：按大端 32 位编码
         byte[] raw = getRaw(sdsKey);
+        // 判断读取的字节数是否符合预期
         boolean needRebuild = (raw == null || raw.length != expectedLen);
 
+        // 存储结果
         Map<String, Long> result = new LinkedHashMap<>();
-
+        // 二、异常处理与“熔断”（防止重建风暴）
+        // 当发现数据需要重建时，为了防止成千上万个请求同时去计算（导致 Redis 挂掉），代码做了极其严密的保护：
+        // inBackoff：检查是否在“退避期”。如果刚失败过，直接返回 0，不折腾 Redis。
+        // allowedByRateLimiter：令牌桶限流。控制单位时间内允许重建的次数。
+        // RLock lock：分布式锁。确保同一时刻只有一个线程在执行重建操作，其他线程拿不到锁直接返回降级结果（0）。
+        // 不符合预期进入下面逻辑
         if (needRebuild) {
             log.info("计数结构不存在，需要重建");
-            // 限流与指数退避：避免在热点实体上触发重建风暴
+            // 《限流与指数退避：避免在热点实体上触发重建风暴》
+
+            // 如果已经触发重建，所有结果返回 0 ，不再执行重建
             if (inBackoff(entityType, entityId)) {
                 for (String m : metrics) {
                     result.put(m, 0L);
@@ -173,50 +194,69 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
+            // 如果先前还没有触发重建，进行限流判断
             if (!allowedByRateLimiter(entityType, entityId)) {
+                // 被限流了，不允许重建，需要进行指数退避
                 escalateBackoff(entityType, entityId);
+                // 直接全部返回 0
                 for (String m : metrics) {
                     result.put(m, 0L);
                 }
                 return result;
             }
 
+            // 允许进行重建了，构建分布式锁
             String lockKey = String.format("lock:sds-rebuild:%s:%s", entityType, entityId);
-
             RLock lock = redisson.getLock(lockKey);
+            // locked 标记是否真的加锁成功，方便 finally 里判断要不要 unlock
             boolean locked = false;
 
             try {
                 // 使用 Redisson 看门狗机制：不指定租期，自动续约（由 Redisson 的 lockWatchdogTimeout 控制）
+                // 0ms：立刻抢锁，抢不到就算了，不阻塞等待。
                 locked = lock.tryLock(0L, TimeUnit.MILLISECONDS);
                 if (!locked) {
+                    // 没获取到锁，指数退避，结果返回默认值 0
                     escalateBackoff(entityType, entityId);
                     for (String m : metrics) {
                         result.put(m, 0L);
                     }
                     return result;
                 }
+
+                // 获取到锁了
                 // 依据位图分片统计真实计数（仅由持锁者执行重建）
                 byte[] newSds = new byte[expectedLen];
                 List<String> rebuildFields = new ArrayList<>();
+                // 遍历 metrics，按 schema 找字段 idx
                 for (String m : metrics) {
+                    // 获取对应索引：like 1 | fav 2
                     Integer idx = CounterSchema.NAME_TO_IDX.get(m);
                     if (idx == null) {
                         continue;
                     }
+                    // 把这个 entity 的 bitmap 分片全部 BITCOUNT / 统计后加总，得到“真实计数”。
                     long sum = bitCountShardsPipelined(m, entityType, entityId);
+                    // 把 val 这个数，限制在 0 ~ 2³²-1 之间，用大端序写进 buf 的 off ~ off+3 四个字节里。
                     writeInt32BE(newSds, idx * CounterSchema.FIELD_SIZE, sum);
                     result.put(m, sum);
                     rebuildFields.add(String.valueOf(idx));
                 }
+
                 // 回写SDS并清理聚合桶，避免重复加算
+                // 把“按事实（bitmap）重建出来的完整计数结果”，一次性写回 SDS，作为新的权威基准值。
                 setRaw(sdsKey, newSds);
+
+                // 重建完了清理该 Key 对应的聚合桶
                 if (!rebuildFields.isEmpty()) {
                     String aggKey = CounterKeys.aggKey(entityType, entityId);
                     redis.opsForHash().delete(aggKey, rebuildFields.toArray());
                 }
+
+                // 重置退避状态（成功重建后）
                 resetBackoff(entityType, entityId);
             } catch (InterruptedException ie) {
+                // 若出异常，返回默认 0 结果
                 Thread.currentThread().interrupt();
                 escalateBackoff(entityType, entityId);
                 for (String m : metrics) {
@@ -224,6 +264,7 @@ public class CounterServiceImpl implements CounterService {
                 }
                 return result;
             } finally {
+                // 如果获取到了锁，最后释放锁
                 if (locked) {
                     try {
                         lock.unlock();
@@ -231,6 +272,7 @@ public class CounterServiceImpl implements CounterService {
                 }
             }
         } else {
+            // 符合预期，进行正常的计数
             for (String m : metrics) {
                 Integer idx = CounterSchema.NAME_TO_IDX.get(m);
                 if (idx == null) {
@@ -354,14 +396,20 @@ public class CounterServiceImpl implements CounterService {
      */
     private boolean inBackoff(String entityType, String entityId) {
         String bKey = String.format("backoff:sds-rebuild:until:%s:%s", entityType, entityId);
+        // Redis 中 不存在这个 key → until == null
+        // Redis 中 存在且值是数字 → 自动反序列化成 Long
+        // Redis 中存在但类型不匹配 → 会抛异常（序列化/反序列化问题）
         RBucket<Long> bucket = redisson.getBucket(bKey);
         Long until = bucket.get();
-
+        // 若存在时间戳，且当前时间戳早于这个时间戳
+        // 就返回 true ，不需要重建
         return until != null && System.currentTimeMillis() < until;
     }
 
     /**
      * 增加退避级别并设置下次允许尝试的时间（指数递增，封顶）。
+     * 当某个 entityType + entityId 的“重建”连续失败/抖动时，
+     * 把下一次允许再尝试的时间往后推，而且推迟时间按指数增长，并且有上限，避免无限增长。
      */
     private void escalateBackoff(String entityType, String entityId) {
         String eKey = String.format("backoff:sds-rebuild:exp:%s:%s", entityType, entityId);
@@ -380,6 +428,7 @@ public class CounterServiceImpl implements CounterService {
         untilB.set(until, Duration.ofMillis(delay + 1000));
     }
 
+
     /**
      * 重置退避状态（成功重建后）。
      */
@@ -396,16 +445,32 @@ public class CounterServiceImpl implements CounterService {
         } catch (Exception ignore) {}
     }
 
+
     /**
      * 限流判断：单位窗口可重建次数，防止抖动与风暴。
+     * 限制某个实体（entityType + entityId）在一个时间窗口内，最多允许执行多少次“重建”操作，用来防止系统抖动、雪崩和重建风暴
+     * 针对某个 entity，在固定时间窗口内，最多允许执行 N 次重建。
+     * 如果超过了，就直接拒绝，防止频繁失败 → 重建 → 再失败 → 再重建，导致系统抖动甚至雪崩。
+     * 该方法基于 Redisson 的分布式限流器，对「实体级别的重建行为」进行窗口限流，
+     * 通过 OVERALL 模式保证多节点一致性，
+     * 有效防止异常抖动场景下的重建风暴，提升系统稳定性与自愈安全性。
      */
     private boolean allowedByRateLimiter(String entityType, String entityId) {
+        // 构造限流 key（按实体维度）
         String rlKey = String.format("rl:sds-rebuild:%s:%s", entityType, entityId);
+        // 获取分布式限流器
         RRateLimiter limiter = redisson.getRateLimiter(rlKey);
-
-        // 初始化速率（如已存在则忽略）
+        // 初始化限流规则（幂等），初始化速率（如已存在则忽略）
+        // RateType.OVERALL 整个集群共享一个限流桶，所有节点一起算（分布式限流）
+        // ratePermits 在一个时间窗口内，最多允许多少次
+        // rateWindowSeconds 窗口大小（秒）
         limiter.trySetRate(RateType.OVERALL, ratePermits, Duration.ofSeconds(rateWindowSeconds));
+        // 用 trySetRate？
+        // 幂等初始化，如果这个 limiter 已经初始化过，不会覆盖，不会重置计数，如果是第一次用，初始化成功
+        // 这点非常重要，否则你每次调用都 reset，限流就失效了。
 
+        // 尝试获取 1 个令牌： 成功 → true ; 失败 → false
+        // 在当前时间窗口内,是否还能再执行一次 rebuild？是否能再次重建？
         return limiter.tryAcquire(1);
     }
 
@@ -422,8 +487,10 @@ public class CounterServiceImpl implements CounterService {
 
     /**
      * 以大端序写入 32 位无符号整型（截断到 0~2^32-1）。
+     * 把 val 这个数，限制在 0 ~ 2³²-1 之间，用大端序写进 buf 的 off ~ off+3 四个字节里。
      */
     private static void writeInt32BE(byte[] buf, int off, long val) {
+        // 下限保护，如果 val < 0 → 写成 0
         long n = Math.max(0, Math.min(val, 0xFFFF_FFFFL));
         buf[off] = (byte) ((n >>> 24) & 0xFF);
         buf[off + 1] = (byte) ((n >>> 16) & 0xFF);
@@ -434,6 +501,7 @@ public class CounterServiceImpl implements CounterService {
     /**
      * 基于位图分片进行管道化 BITCOUNT 汇总，用于按事实重建计数。
      * 说明：当前使用 KEYS 枚举分片（生产建议维护索引集合），结果按分片 BITCOUNT 求和。
+     * 找到某个 metric + entity 的所有 bitmap 分片，对每个分片执行 BITCOUNT，把结果加起来，得到“真实计数
      */
     private long bitCountShardsPipelined(String metric, String etype, String eid) {
         String pattern = String.format("bm:%s:%s:%s:*", metric, etype, eid);

@@ -32,7 +32,7 @@ public class CounterEventProducer {
             // 异步写入计数事件主题（幂等生产已在配置启用）
             kafka.send(CounterTopics.EVENTS, payload);
         } catch (JsonProcessingException e) {
-            // 生产异常不抛出影响主流程；后续可接入告警
+            // 生产异常不抛出异常影响主流程；后续可接入告警
         }
     }
 }

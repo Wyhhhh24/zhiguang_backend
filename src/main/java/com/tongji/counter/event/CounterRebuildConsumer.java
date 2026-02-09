@@ -21,7 +21,9 @@ import java.util.List;
 public class CounterRebuildConsumer {
 
     private final ObjectMapper objectMapper;
+
     private final StringRedisTemplate redis;
+
     private final DefaultRedisScript<Long> incrScript;
 
     public CounterRebuildConsumer(ObjectMapper objectMapper, StringRedisTemplate redis) {
@@ -32,11 +34,7 @@ public class CounterRebuildConsumer {
         this.incrScript.setScriptText(INCR_FIELD_LUA); // 复用与聚合刷写一致的原子折叠脚本
     }
 
-    @KafkaListener(
-            topics = CounterTopics.EVENTS,
-            groupId = "counter-rebuild",
-            properties = {"auto.offset.reset=earliest"}
-    )
+    @KafkaListener(topics = CounterTopics.EVENTS, groupId = "counter-rebuild", properties = {"auto.offset.reset=earliest"})
     public void onMessage(String message, Acknowledgment ack) throws Exception {
         // 灾备场景：从最早位点回放历史事件，直接折叠到 SDS
         CounterEvent evt = objectMapper.readValue(message, CounterEvent.class);

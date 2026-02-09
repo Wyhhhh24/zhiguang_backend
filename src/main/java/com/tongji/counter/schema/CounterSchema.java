@@ -15,7 +15,7 @@ public final class CounterSchema {
     // 2: fav
     // 3: comment（预留）
     // 4: repost（预留）
-    public static final String SCHEMA_ID = "v1";
+    public static final String SCHEMA_ID = "v1"; // 相当于一个模式，此时处于 v1 模式，即 SDS 中会分为上面五部分
     public static final int FIELD_SIZE = 4; // 改为 4 字节 Int32 存储
     public static final int SCHEMA_LEN = 5; // 预留 5 个指标位
 

@@ -8,8 +8,11 @@ import lombok.Data;
  */
 @Data
 public class ActionRequest {
+    // 如: knowpost
     @NotBlank
-    private String entityType; // 如: knowpost
+    private String entityType;
+
+    // 内容ID
     @NotBlank
-    private String entityId;   // 内容ID
+    private String entityId;
 }
