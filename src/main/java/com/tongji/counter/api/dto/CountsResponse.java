@@ -9,8 +9,13 @@ import java.util.Map;
  */
 @Data
 public class CountsResponse {
+    // 实体类型，如: article，video 等
     private String entityType;
+
+    // 实体 ID
     private String entityId;
+
+    // 计数结果收集，指标到计数值的映射
     private Map<String, Long> counts;
 
     /**

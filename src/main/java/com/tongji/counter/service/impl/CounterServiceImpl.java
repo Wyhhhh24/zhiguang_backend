@@ -298,10 +298,12 @@ public class CounterServiceImpl implements CounterService {
     @Override
     public Map<String, Map<String, Long>> getCountsBatch(String entityType, List<String> entityIds, List<String> metrics) {
         Map<String, Map<String, Long>> out = new LinkedHashMap<>();
+        // 参数基本判断
         if (entityIds == null || entityIds.isEmpty() || metrics == null || metrics.isEmpty()) {
             return out;
         }
 
+        // 构建实体集合中每一个实体的 SDS key，放到一个 List 中
         List<String> keys = new ArrayList<>(entityIds.size());
         for (String eid : entityIds) {
             keys.add(CounterKeys.sdsKey(entityType, eid));
@@ -315,28 +317,41 @@ public class CounterServiceImpl implements CounterService {
             return null;
         });
 
+        // 读取的 SDS 预期值
         int expectedLen = CounterSchema.SCHEMA_LEN * CounterSchema.FIELD_SIZE;
         for (int i = 0; i < entityIds.size(); i++) {
             String eid = entityIds.get(i);
+            // 合法性校验，以及获取对应的实体的字节数组
             Object rawObj = i < raws.size() ? raws.get(i) : null;
+            // 类型判断，进行强转
             byte[] raw = (rawObj instanceof byte[]) ? (byte[]) rawObj : null;
 
             Map<String, Long> m = new LinkedHashMap<>();
+            // 字节数组合法性判断
             if (raw != null && raw.length == expectedLen) {
                 for (String name : metrics) {
+                    // metrics ：like 、 fav ，获取对应的 index ，获取 SDS 中对应部分的总计数
                     Integer idx = CounterSchema.NAME_TO_IDX.get(name);
-                    if (idx == null) continue;
+                    if (idx == null)
+                        continue;
+                    // 计算偏移量
                     int off = idx * CounterSchema.FIELD_SIZE;
+                    // 读取对应偏移量的计数，也就是该实体中 like/fav 对应位置的计数
                     long val = readInt32BE(raw, off);
+                    // 存到该实体的结果集合
                     m.put(name, val);
                 }
             } else {
+                // 缺失或异常结构时补零，避免接口失败与重建风暴
                 for (String name : metrics) {
-                    m.put(name, 0L); // 缺失或异常结构时补零，避免接口失败与重建风暴
+                    m.put(name, 0L);
                 }
             }
+
+            // 存储对应实体的计数
             out.put(eid, m);
         }
+        // 遍历结束，计算结束，返回结果
         return out;
     }
 
@@ -346,7 +361,9 @@ public class CounterServiceImpl implements CounterService {
      */
     @Override
     public boolean isLiked(String entityType, String entityId, long userId) {
+        // 计算出该实体位于哪一个分片
         long chunk = BitmapShard.chunkOf(userId);
+        // 计算出分片中的偏移量
         long bit = BitmapShard.bitOf(userId);
         return getBit(CounterKeys.bitmapKey("like", entityType, entityId, chunk), bit);
     }
@@ -356,13 +373,15 @@ public class CounterServiceImpl implements CounterService {
      */
     @Override
     public boolean isFaved(String entityType, String entityId, long userId) {
+        // 计算出该实体位于哪一个分片
         long chunk = BitmapShard.chunkOf(userId);
+        // 计算出分片中的偏移量
         long bit = BitmapShard.bitOf(userId);
         return getBit(CounterKeys.bitmapKey("fav", entityType, entityId, chunk), bit);
     }
 
     /**
-     * 读取位图某偏移位（GETBIT）。
+     * 读取位图某偏移位（GETBIT），是否为 1。
      * @param key 位图分片键
      * @param offset 分片内位偏移
      * @return 位是否为 1
@@ -474,6 +493,7 @@ public class CounterServiceImpl implements CounterService {
         return limiter.tryAcquire(1);
     }
 
+
     /**
      * 以大端序读取 32 位无符号整型。
      */
@@ -484,6 +504,7 @@ public class CounterServiceImpl implements CounterService {
         }
         return n;
     }
+
 
     /**
      * 以大端序写入 32 位无符号整型（截断到 0~2^32-1）。
@@ -497,6 +518,7 @@ public class CounterServiceImpl implements CounterService {
         buf[off + 2] = (byte) ((n >>> 8) & 0xFF);
         buf[off + 3] = (byte) (n & 0xFF);
     }
+
 
     /**
      * 基于位图分片进行管道化 BITCOUNT 汇总，用于按事实重建计数。

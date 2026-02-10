@@ -4,15 +4,15 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 /**
- * 行为请求体：用于点赞/收藏等操作的实体标识。
+ * 点赞、收藏行为请求体：用于点赞/收藏等操作的实体标识。
  */
 @Data
 public class ActionRequest {
-    // 如: knowpost
+    // 实体类型，如: article，video 等
     @NotBlank
     private String entityType;
 
-    // 内容ID
+    // 实体 ID
     @NotBlank
     private String entityId;
 }
