@@ -4,8 +4,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 计数 Schema 映射及常量定义。
- * 阶段一采用 8 字节 Int64 固定偏移（SDS），后续可平滑替换为 5 字节实现。
+ * 计数 Schema 映射及常量定义
  */
 public final class CounterSchema {
 
@@ -16,18 +15,18 @@ public final class CounterSchema {
     // 3: comment（预留）
     // 4: repost（预留）
     public static final String SCHEMA_ID = "v1"; // 相当于一个模式，此时处于 v1 模式，即 SDS 中会分为上面五部分
-    public static final int FIELD_SIZE = 4; // 改为 4 字节 Int32 存储
-    public static final int SCHEMA_LEN = 5; // 预留 5 个指标位
+    public static final int FIELD_SIZE = 4; // 改为 4 字节 Int32 存储，占用 32位二进制空间的整数类型
+    public static final int SCHEMA_LEN = 5; // 预留 5 个指标位，上面 5 个指标
 
     public static final int IDX_LIKE = 1;
     public static final int IDX_FAV = 2;
 
+    // 对外可请求的指标集合
     public static final Map<String, Integer> NAME_TO_IDX = Map.of(
             "like", IDX_LIKE,
             "fav", IDX_FAV
     );
-
-    public static final Set<String> SUPPORTED_METRICS = NAME_TO_IDX.keySet(); // 对外可请求的指标集合
+    public static final Set<String> SUPPORTED_METRICS = NAME_TO_IDX.keySet();
 
     private CounterSchema() {}
 }

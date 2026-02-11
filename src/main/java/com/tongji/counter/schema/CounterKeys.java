@@ -1,7 +1,7 @@
 package com.tongji.counter.schema;
 
 /**
- * Redis Key 生成工具。
+ * 笔记维度计数键生成工具
  */
 public final class CounterKeys {
     private CounterKeys() {}
@@ -16,7 +16,7 @@ public final class CounterKeys {
         return String.format("bm:%s:%s:%s:%d", metric, entityType, entityId, chunk); // 位图事实层（分片）
     }
 
-    // 聚合增量持久化桶（Hash）：agg:{schema}:{etype}:{eid}
+    // 聚合增量持久化桶键（Hash）：agg:{schema}:{etype}:{eid}
     public static String aggKey(String entityType, String entityId) {
         return String.format("agg:%s:%s:%s", CounterSchema.SCHEMA_ID, entityType, entityId); // 刷写前的增量存储桶 Key
     }

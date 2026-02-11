@@ -15,7 +15,7 @@ public class CountsResponse {
     // 实体 ID
     private String entityId;
 
-    // 计数结果收集，指标到计数值的映射
+    // 结果存到该 Map 中，指标（like/fav）与计数值相映射
     private Map<String, Long> counts;
 
     /**

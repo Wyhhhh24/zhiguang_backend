@@ -12,8 +12,15 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class CounterEventProducer {
+    /**
+     * Kafka 生产者客户端
+     */
     private final KafkaTemplate<String, String> kafka;
 
+    /**
+     * 处理 Java对象 和 JSON 之间的相互转换
+     *  JSON 和 Java 对象之间的转换器
+     */
     private final ObjectMapper objectMapper;
 
     public CounterEventProducer(KafkaTemplate<String, String> kafka, ObjectMapper objectMapper) {
@@ -23,16 +30,16 @@ public class CounterEventProducer {
 
     /**
      * 发布计数事件到 Kafka。
-     * @param event 计数事件（含实体类型、ID、指标、delta（+1 还是 -1）等）
+     * @param event 计数事件：含实体类型、实体 ID、指标、增量 delta（+1 / -1）
      */
     public void publish(CounterEvent event) {
         try {
-            // 将事件转换为字符串，并发送事件
+            // 将事件转换为 JSON 字符串，并发送事件
             String payload = objectMapper.writeValueAsString(event);
             // 异步写入计数事件主题（幂等生产已在配置启用）
             kafka.send(CounterTopics.EVENTS, payload);
         } catch (JsonProcessingException e) {
-            // 生产异常不抛出异常影响主流程；后续可接入告警
+            // 生产出现异常，不抛出异常影响主流程，后续可接入告警
         }
     }
 }

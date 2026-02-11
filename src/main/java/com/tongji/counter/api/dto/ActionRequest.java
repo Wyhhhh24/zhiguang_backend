@@ -8,7 +8,7 @@ import lombok.Data;
  */
 @Data
 public class ActionRequest {
-    // 实体类型，如: article，video 等
+    // 实体类型，如: article、video 等
     @NotBlank
     private String entityType;
 
