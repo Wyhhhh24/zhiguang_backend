@@ -43,7 +43,7 @@ public class ActionController {
                                                     @AuthenticationPrincipal Jwt jwt) {
         // 解析 JWT 获取 userId
         long uid = jwtService.extractUserId(jwt);
-        // 基于用户Id+实体类型+实体Id，对相应的事件进行点赞，获取状态是否改变的标识
+        // 基于用户Id+实体类型+实体Id，对相应的事件进行点赞，返回该事件状态是否改变的标识
         boolean changed = counterService.like(req.getEntityType(), req.getEntityId(), uid);
         return ResponseEntity.ok(Map.of(
                 "changed", changed, // 标识这次操作是否改变状态（避免重复点击）

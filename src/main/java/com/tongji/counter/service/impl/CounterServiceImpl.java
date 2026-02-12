@@ -73,7 +73,7 @@ public class CounterServiceImpl implements CounterService {
     }
 
     /**
-     * 点赞：位图原子置位，仅当状态从未点赞→已点赞时返回 true。
+     * 点赞：位图原子置位，仅当状态从未点赞 → 已点赞时返回 true。
      * 同步路径完成事实层更新后产出增量事件，异步聚合到计数快照。
      * @param entityType 实体类型
      * @param entityId 实体 ID
@@ -112,7 +112,7 @@ public class CounterServiceImpl implements CounterService {
 
     /**
      * 位图状态切换：仅在状态变化时返回成功，并产出增量事件。
-     * @param etype 实体类型
+     * @param etype 实体类型（article，video）
      * @param eid 实体 ID
      * @param uid 用户 ID
      * @param metric 指标名称（like/fav）
@@ -127,6 +127,7 @@ public class CounterServiceImpl implements CounterService {
         long bit = BitmapShard.bitOf(uid);
 
         // 构建分片键（Redis 中对应的键的名称）
+        // "bm:{metric}:{etype}:{eid}:{chunk}"
         String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
 
         // 构建执行 Lua 脚本时操作的对应 Key，也就是将键名放进 List 里面
@@ -135,38 +136,43 @@ public class CounterServiceImpl implements CounterService {
         // 构建执行 Lua 脚本时所需传的参数：对分片中的哪位进行操作（偏移量）、增量还是减量基于这两个字符串
         List<String> args = List.of(String.valueOf(bit), add ? "add" : "remove");
 
-        // 执行 Lua 脚本，获取返回值：1 执行成功 、0 无需执行、-1 参数错误
+        // 执行 Lua 脚本，也就是找到对应分片，通过对应位偏移量，获取对应的位是 0 / 1 ，0 代表未点赞/收藏， 1 代表已点赞/收藏
+        // 获取返回值：1 执行成功 、0 无需执行（你要进行点赞，但实际已经点赞）、-1 参数错误
         Long changed = redis.execute(toggleScript, keys, args.toArray());
-        // 判断是否成功
+
+        // 通过返回值，判断操作是否成功
         boolean ok = changed == 1L;
         // 如果操作成功
         if (ok) {
             // 判断添加还是移除，添加 1 ；移除 -1
-            // 得到增量还是减量操作数
+            // 得到增量是 1 还是 -1
             int delta = add ? 1 : -1;
             // 产出计数事件（异步聚合），分区按实体维度保证同实体事件顺序
-            // 确保同一实体的所有事件进入同一 Kafka 分区，保障事件顺序，且在消费端集中处理，避免跨分区乱序
+            // 确保同一实体的所有事件进入同一 Kafka 分区，保障事件顺序，且在消费端集中处理，避免跨分区乱序 TODO 这里如何实现
             eventProducer.publish(CounterEvent.of(etype, eid, metric, idx, uid, delta));
 
-            // 本地事件：触发缓存失效/旁路更新等快速路径
+            // 这里是生产事件， @EventListener 这个注解标注的方法监听并处理
+            // 本地事件：触发缓存失效/旁路更新等快速路径 TODO 这里是干什么的
             eventPublisher.publishEvent(CounterEvent.of(etype, eid, metric, idx, uid, delta));
         }
         return ok;
     }
 
+
     /**
      * 获取实体计数汇总（SDS）。
-     * 若缺失或结构异常则触发基于位图的事实重建，并清理对应聚合字段。
+     * 若缺失或结构异常则触发基于位图的事实重建，并清理对应聚合字段
+     * metrics：like/fav 等
      */
     @Override
     public Map<String, Long> getCounts(String entityType, String entityId, List<String> metrics) {
         // 一、检查数据完整性
-        // 构建该 entityType+entityId 对应的 Key
+        // 构建该 entityType+entityId 对应的计数 Key
         String sdsKey = CounterKeys.sdsKey(entityType, entityId);
         // 计算预期的位数
         int expectedLen = CounterSchema.SCHEMA_LEN * CounterSchema.FIELD_SIZE;
-        // Redis 的 value 是一个 string（SDS），但其内部是一个自定义的二进制数组；
-        // 每个计数字段固定占 4 字节；
+        // Redis 的 value 是一个 string（SDS），但其内部是一个自定义的二进制数组
+        // 每个计数字段固定占 4 字节
         // 字段值使用 32-bit 整数表示，并且统一采用大端字节序存储。
         // 读取 SDS 原始字节
         // SDS 固定结构：按大端 32 位编码
@@ -177,16 +183,17 @@ public class CounterServiceImpl implements CounterService {
         // 存储结果
         Map<String, Long> result = new LinkedHashMap<>();
         // 二、异常处理与“熔断”（防止重建风暴）
-        // 当发现数据需要重建时，为了防止成千上万个请求同时去计算（导致 Redis 挂掉），代码做了极其严密的保护：
-        // inBackoff：检查是否在“退避期”。如果刚失败过，直接返回 0，不折腾 Redis。
-        // allowedByRateLimiter：令牌桶限流。控制单位时间内允许重建的次数。
-        // RLock lock：分布式锁。确保同一时刻只有一个线程在执行重建操作，其他线程拿不到锁直接返回降级结果（0）。
+        // 当发现数据需要重建时，为了防止成千上万个请求同时去重建（导致 Redis 挂掉），需做严密的保护：
+        // inBackoff：检查是否在“退避期”。如果刚失败过，降级，直接返回 0，不折腾 Redis
+        // allowedByRateLimiter：令牌桶限流。控制单位时间内允许重建的次数
+        // RLock lock：分布式锁。确保同一时刻只有一个线程在执行重建操作，其他线程拿不到锁直接返回降级结果（0）
+
         // 不符合预期进入下面逻辑
         if (needRebuild) {
             log.info("计数结构不存在，需要重建");
             // 《限流与指数退避：避免在热点实体上触发重建风暴》
 
-            // 如果已经触发重建，所有结果返回 0 ，不再执行重建
+            // 如果已经触发过重建，降级，所有结果直接返回 0 ，不重复执行重建
             if (inBackoff(entityType, entityId)) {
                 for (String m : metrics) {
                     result.put(m, 0L);
@@ -194,7 +201,7 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
-            // 如果先前还没有触发重建，进行限流判断
+            // 如果先前还没有触发重建，也就是未处于退避期，进行限流判断
             if (!allowedByRateLimiter(entityType, entityId)) {
                 // 被限流了，不允许重建，需要进行指数退避
                 escalateBackoff(entityType, entityId);
@@ -205,7 +212,7 @@ public class CounterServiceImpl implements CounterService {
                 return result;
             }
 
-            // 允许进行重建了，构建分布式锁
+            // 允许进行重建，尝试获取分布式锁
             String lockKey = String.format("lock:sds-rebuild:%s:%s", entityType, entityId);
             RLock lock = redisson.getLock(lockKey);
             // locked 标记是否真的加锁成功，方便 finally 里判断要不要 unlock
@@ -224,7 +231,7 @@ public class CounterServiceImpl implements CounterService {
                     return result;
                 }
 
-                // 获取到锁了
+                // 获取到锁
                 // 依据位图分片统计真实计数（仅由持锁者执行重建）
                 byte[] newSds = new byte[expectedLen];
                 List<String> rebuildFields = new ArrayList<>();
@@ -286,6 +293,57 @@ public class CounterServiceImpl implements CounterService {
         }
         return result;
     }
+
+
+    /**
+     * 读取 SDS 原始字节（固定结构，长度=字段数×4）。
+     */
+    private byte[] getRaw(String key) {
+        return redis.execute((RedisCallback<byte[]>) connection ->
+                connection.stringCommands().get(key.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * 是否处于指数退避期：若处于退避期，跳过重建并返回降级结果
+     * 如何判断是否处于退避期呢？
+     * 对某一个实体事件，实体事件第一次重建时，在 Redis 中存储该事件的退避结束时间戳
+     * 拿当前时间戳与退避结束时间戳进行比对，若当前时间戳早于退避时间戳，即不需要重建
+     */
+    private boolean inBackoff(String entityType, String entityId) {
+        String bKey = String.format("backoff:sds-rebuild:until:%s:%s", entityType, entityId);
+        // Redis 中 不存在这个 key → until == null
+        // Redis 中 存在且值是数字 → 自动反序列化成 Long
+        // Redis 中存在但类型不匹配 → 会抛异常（序列化/反序列化问题）
+        RBucket<Long> bucket = redisson.getBucket(bKey);
+        Long until = bucket.get();
+        // 若存在时间戳，且当前时间戳早于这个时间戳
+        // 就返回 true ，不需要重建
+        return until != null && System.currentTimeMillis() < until;
+    }
+
+
+    /**
+     * 增加退避级别并设置下次允许尝试的时间（指数递增，封顶）。
+     * 当某个 entityType + entityId 的“重建”连续失败/抖动时，
+     * 把下一次允许再尝试的时间往后推，而且推迟时间按指数增长，并且有上限，避免无限增长。
+     */
+    private void escalateBackoff(String entityType, String entityId) {
+        String eKey = String.format("backoff:sds-rebuild:exp:%s:%s", entityType, entityId);
+        String uKey = String.format("backoff:sds-rebuild:until:%s:%s", entityType, entityId);
+
+        RBucket<Integer> expB = redisson.getBucket(eKey);
+        RBucket<Long> untilB = redisson.getBucket(uKey);
+        Integer exp = expB.get();
+
+        int nextExp = Math.min(exp == null ? 0 : exp + 1, 10);
+        long delay = Math.min(backoffBaseMs * (1L << nextExp), backoffMaxMs);
+        long until = System.currentTimeMillis() + delay;
+
+        // 设置过期时间，避免长时间残留
+        expB.set(nextExp);
+        untilB.set(until, Duration.ofMillis(delay + 1000));
+    }
+
 
     /**
      * 批量获取实体计数（管道批量 GET 降低 RTT）。
@@ -355,6 +413,7 @@ public class CounterServiceImpl implements CounterService {
         return out;
     }
 
+
     /**
      * 是否点赞判定：基于分片位图在分片内做位测试。
      * 毫秒级读取，不依赖计数快照。
@@ -368,17 +427,19 @@ public class CounterServiceImpl implements CounterService {
         return getBit(CounterKeys.bitmapKey("like", entityType, entityId, chunk), bit);
     }
 
+
     /**
      * 是否收藏判定：同点赞，基于分片位图位测试。
      */
     @Override
     public boolean isFaved(String entityType, String entityId, long userId) {
-        // 计算出该实体位于哪一个分片
+        // 基于 userId 获取计算出该实体位于哪一个分片
         long chunk = BitmapShard.chunkOf(userId);
         // 计算出分片中的偏移量
         long bit = BitmapShard.bitOf(userId);
         return getBit(CounterKeys.bitmapKey("fav", entityType, entityId, chunk), bit);
     }
+
 
     /**
      * 读取位图某偏移位（GETBIT），是否为 1。
@@ -392,13 +453,6 @@ public class CounterServiceImpl implements CounterService {
         return Boolean.TRUE.equals(bit);
     }
 
-    /**
-     * 读取 SDS 原始字节（固定结构，长度=字段数×4）。
-     */
-    private byte[] getRaw(String key) {
-        return redis.execute((RedisCallback<byte[]>) connection ->
-                connection.stringCommands().get(key.getBytes(StandardCharsets.UTF_8)));
-    }
 
     /**
      * 写入 SDS 原始字节（覆盖式写）。
@@ -408,43 +462,6 @@ public class CounterServiceImpl implements CounterService {
             connection.stringCommands().set(key.getBytes(StandardCharsets.UTF_8), val);
             return null;
         });
-    }
-
-    /**
-     * 是否处于指数退避期：期间跳过重建并返回降级结果。
-     */
-    private boolean inBackoff(String entityType, String entityId) {
-        String bKey = String.format("backoff:sds-rebuild:until:%s:%s", entityType, entityId);
-        // Redis 中 不存在这个 key → until == null
-        // Redis 中 存在且值是数字 → 自动反序列化成 Long
-        // Redis 中存在但类型不匹配 → 会抛异常（序列化/反序列化问题）
-        RBucket<Long> bucket = redisson.getBucket(bKey);
-        Long until = bucket.get();
-        // 若存在时间戳，且当前时间戳早于这个时间戳
-        // 就返回 true ，不需要重建
-        return until != null && System.currentTimeMillis() < until;
-    }
-
-    /**
-     * 增加退避级别并设置下次允许尝试的时间（指数递增，封顶）。
-     * 当某个 entityType + entityId 的“重建”连续失败/抖动时，
-     * 把下一次允许再尝试的时间往后推，而且推迟时间按指数增长，并且有上限，避免无限增长。
-     */
-    private void escalateBackoff(String entityType, String entityId) {
-        String eKey = String.format("backoff:sds-rebuild:exp:%s:%s", entityType, entityId);
-        String uKey = String.format("backoff:sds-rebuild:until:%s:%s", entityType, entityId);
-
-        RBucket<Integer> expB = redisson.getBucket(eKey);
-        RBucket<Long> untilB = redisson.getBucket(uKey);
-        Integer exp = expB.get();
-
-        int nextExp = Math.min(exp == null ? 0 : exp + 1, 10);
-        long delay = Math.min(backoffBaseMs * (1L << nextExp), backoffMaxMs);
-        long until = System.currentTimeMillis() + delay;
-
-        // 设置过期时间，避免长时间残留
-        expB.set(nextExp);
-        untilB.set(until, Duration.ofMillis(delay + 1000));
     }
 
 
@@ -549,11 +566,21 @@ public class CounterServiceImpl implements CounterService {
     }
 
     // Redis 内嵌 Lua（Redis 5/6 的 Lua 5.1），位图原子切换（分片内偏移）
+    // 位图本质：Redis位图是一个二进制字符串，每个字节 8 位
     private static final String TOGGLE_LUA = """
+            -- 对应的分片 key
             local bmKey = KEYS[1]
+            
+            -- 分片中的偏移量
             local offset = tonumber(ARGV[1])
-            local op = ARGV[2] -- 'add' or 'remove'
+            
+            -- 'add' or 'remove'
+            local op = ARGV[2]
+            
+            -- 获取当前偏移量对应的值 1 还是 0 （已点赞/未点赞）
             local prev = redis.call('GETBIT', bmKey, offset)
+            
+            -- 基于当前事件类型，以及当前值判断是否需要操作，若需要操作返回 1 ，若无需操作返回 0 ，若异常返回 -1
             if op == 'add' then
               if prev == 1 then return 0 end
               redis.call('SETBIT', bmKey, offset, 1)

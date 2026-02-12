@@ -49,7 +49,7 @@ public class CounterRebuildConsumer {
     }
 
     /**
-     * 定义 Kafka 消费者
+     * 定义 Kafka 重建的消费者
      * KafkaListener 这个注解标记的方法，会自动监听指定的 Kafka Topic，当有新消息时自动调用该方法处理消息
      * 1.指定要监听的 Topic
      * 2.消费者组 ID ，在消费者组内实现负载均衡和偏移量管理，同一组内的消费者共同消费一个Topic
@@ -104,7 +104,7 @@ public class CounterRebuildConsumer {
               return n
             end
             
-            -- 将十进制数字转换回 4 字节的大端序二进制字符串，准备修改原值实现增量
+            -- 将十进制数字转换回 4 字节的大端序二进制字符串，修改完原值实现了增量
             local function write32be(n)
               -- 倒序计算：通过取模和整除，把数字拆解回 4 个字节
               local t = {}
