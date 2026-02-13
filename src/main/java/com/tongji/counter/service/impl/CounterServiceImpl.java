@@ -120,7 +120,7 @@ public class CounterServiceImpl implements CounterService {
      * @param add 是否置位（true=添加，false=移除）
      */
     private boolean toggle(String etype, String eid, long uid, String metric, int idx, boolean add) {
-        // 固定分片定位：按用户 ID 映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点
+        // 固定分片定位：按用户 ID 映射到 chunk 与分片内 bit 偏移，避免单键膨胀与热点 TODO 单键膨胀与热点是什么
         // 获取用户所在的分片编号（userId / 32768）
         long chunk = BitmapShard.chunkOf(uid);
         // 获取用户在分片内的位偏移（userId % 32768）
