@@ -73,20 +73,23 @@ CREATE TABLE IF NOT EXISTS know_posts (
 
 CREATE TABLE IF NOT EXISTS outbox (
     id BIGINT UNSIGNED NOT NULL,
-    aggregate_type VARCHAR(64) NOT NULL,
-    aggregate_id BIGINT UNSIGNED NULL,
-    type VARCHAR(64) NOT NULL,
-    payload JSON NOT NULL,
+    aggregate_type VARCHAR(64) NOT NULL, -- "FOLLOW" / "UNFOLLOW"
+    aggregate_id BIGINT UNSIGNED NULL, -- 关系ID
+    type VARCHAR(64) NOT NULL, -- "USER_RELATION_CHANGE"
+    payload JSON NOT NULL, -- 事件详情
     created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     KEY ix_outbox_agg (aggregate_type, aggregate_id),
     KEY ix_outbox_ct (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 主表：following（主动关注关系） 关注表 —— 一个用户的关注列表
+-- following表：以"关注者"为核心视角，优化关注操作
+-- 双向冗余：数据完全同步，但索引设计不同，服务不同查询场景
 CREATE TABLE IF NOT EXISTS following (
     id BIGINT UNSIGNED NOT NULL,
-    from_user_id BIGINT UNSIGNED NOT NULL,
-    to_user_id BIGINT UNSIGNED NOT NULL,
+    from_user_id BIGINT UNSIGNED NOT NULL, -- 关注者
+    to_user_id BIGINT UNSIGNED NOT NULL, -- 被关注者
     rel_status TINYINT NOT NULL DEFAULT 1,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
@@ -96,10 +99,13 @@ CREATE TABLE IF NOT EXISTS following (
     KEY idx_to (to_user_id, from_user_id, rel_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 伪从表：follower（被动粉丝关系） 粉丝表 —— 一个用户的粉丝列表
+-- follower表：以"被关注者"为核心视角，优化粉丝列表查询
+-- 双向冗余：数据完全同步，但索引设计不同，服务不同查询场景
 CREATE TABLE IF NOT EXISTS follower (
     id BIGINT UNSIGNED NOT NULL,
-    to_user_id BIGINT UNSIGNED NOT NULL,
-    from_user_id BIGINT UNSIGNED NOT NULL,
+    to_user_id BIGINT UNSIGNED NOT NULL, -- 被关注者（视角转换）
+    from_user_id BIGINT UNSIGNED NOT NULL, -- 粉丝
     rel_status TINYINT NOT NULL DEFAULT 1,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,

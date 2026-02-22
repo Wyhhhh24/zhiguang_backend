@@ -8,17 +8,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 关系表数据访问层。
- * 职责：维护关注/粉丝关系的插入与逻辑取消，分页读取与行数据回填，统计有效关系计数。
+ * 用户关系表数据访问层。
+ * 职责：维护（关注/粉丝）关系的插入与逻辑取消，分页读取与行数据回填，统计有效关系计数。
  */
 @Mapper
 public interface RelationMapper {
     /**
      * 插入关注关系。
      * @param id 主键ID
-     * @param fromUserId 发起关注的用户ID
-     * @param toUserId 被关注的用户ID
-     * @param relStatus 关系状态
+     * @param fromUserId 发起关注的用户ID （当前用户 ID）
+     * @param toUserId 被关注的用户ID （当前用户想要关注的用户 ID）
+     * @param relStatus 关系状态 （1 关注 / 0 取消关注）
      * @return 影响行数
      */
     int insertFollowing(@Param("id") Long id,
@@ -26,20 +26,22 @@ public interface RelationMapper {
                         @Param("toUserId") Long toUserId,
                         @Param("relStatus") Integer relStatus);
 
+
     /**
      * 取消关注关系（逻辑更新）。
-     * @param fromUserId 发起者
-     * @param toUserId 目标者
+     * @param fromUserId 发起者（当前用户 ID）
+     * @param toUserId 目标者（当前用户想取消关注的用户 ID）
      * @return 影响行数
      */
     int cancelFollowing(@Param("fromUserId") Long fromUserId,
                         @Param("toUserId") Long toUserId);
 
+
     /**
      * 插入粉丝关系。
      * @param id 主键ID
-     * @param toUserId 被关注者
-     * @param fromUserId 关注者
+     * @param toUserId 被关注者（作为粉丝的用户 ID）
+     * @param fromUserId 关注者（当前用户 ID）
      * @param relStatus 关系状态
      * @return 影响行数
      */

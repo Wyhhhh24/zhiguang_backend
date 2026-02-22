@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.tongji.relation.mapper.RelationMapper">
+
+    <!--  它尝试向 following 表中插入一条新的关注记录。
+    如果插入的数据（通常是主键 id或唯一索引）已经存在，那么它不会报错，而是执行更新操作，修改该记录的状态和时间。
+    作用是“插入或更新”。它允许你用同一个 SQL 语句来处理“新增关注”和“修改关注状态（如取消关注）”两种场景，
+    避免了先查询是否存在再决定插入还是更新的复杂逻辑。-->
     <insert id="insertFollowing">
         INSERT INTO following (id, from_user_id, to_user_id, rel_status, created_at, updated_at)
         VALUES (#{id}, #{fromUserId}, #{toUserId}, #{relStatus}, NOW(3), NOW(3))
         ON DUPLICATE KEY UPDATE rel_status=VALUES(rel_status), updated_at=VALUES(updated_at)
     </insert>
+
     <update id="cancelFollowing">
         UPDATE following SET rel_status=0, updated_at=NOW(3)
         WHERE from_user_id=#{fromUserId} AND to_user_id=#{toUserId}
