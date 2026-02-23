@@ -8,9 +8,9 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Outbox 消息解析工具。
+ * Outbox 消息解析工具
  *
- * <p>用于消费 Canal 推送的 binlog JSON 消息，从中提取 outbox 表的行数据（INSERT/UPDATE）。</p>
+ * <p>用于消费 Canal 推送的 binlog JSON 消息，从中提取 Outbox 表的行数据（INSERT/UPDATE）。</p>
  */
 public final class OutboxMessageUtil {
     /**
@@ -34,22 +34,26 @@ public final class OutboxMessageUtil {
      */
     public static List<JsonNode> extractRows(ObjectMapper objectMapper, String message) {
         try {
+            // 它表示 JSON 数据结构中的一个节点，用于以树形模型（Tree Model）的方式解析和操作 JSON 数据
             JsonNode root = objectMapper.readTree(message);
 
             JsonNode table = root.get("table");
+            // 判断消息中记录的表名是否是 outbox
             if (table == null || !"outbox".equals(table.asText())) {
                 return Collections.emptyList();
             }
-
+            // 判断消息记录中的行操作类型
             JsonNode type = root.get("type");
             if (type == null || (!"INSERT".equals(type.asText()) && !"UPDATE".equals(type.asText()))) {
                 return Collections.emptyList();
             }
-
+            // 判断消息记录中的内容
             JsonNode data = root.get("data");
             if (data == null || !data.isArray()) {
                 return Collections.emptyList();
             }
+
+            // 解析消息出来，返回结果集合
             List<JsonNode> rows = new ArrayList<>();
             data.forEach(rows::add);
             return rows;

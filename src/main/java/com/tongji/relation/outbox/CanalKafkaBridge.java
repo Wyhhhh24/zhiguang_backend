@@ -19,26 +19,69 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 
 /**
- * Canal→Kafka 桥接器。
- * 职责：订阅 outbox 表的行级变更（ROWDATA），仅转发 INSERT/UPDATE 的 payload 字段到 Kafka 主题；批次确认位点确保至少一次语义。
+ * Canal → Kafka 桥接器
+ * 职责：订阅 Outbox 表的行级变更（ROWDATA），仅转发 INSERT/UPDATE 的 payload 字段到 Kafka 主题；批次确认位点确保至少一次语义
  * 可靠性：解析失败或非关心类型不提交位点；停止时断开 Canal 连接并清理资源。
  */
 @Service
 public class CanalKafkaBridge implements SmartLifecycle {
+    /**
+     * Kafka 生产者客户端
+     */
     private final KafkaTemplate<String, String> kafka;
+    /**
+     * JSON 序列化器
+     */
     private final ObjectMapper objectMapper;
+    /**
+     * 是否启用
+     */
     private final boolean enabled;
+    /**
+     * Canal 主机，ip地址
+     */
     private final String host;
+    /**
+     * Canal 端口
+     */
     private final int port;
+    /**
+     * 实例名
+     */
     private final String destination;
+    /**
+     * 用户名
+     */
     private final String username;
+    /**
+     * 密码
+     */
     private final String password;
+    /**
+     * 订阅过滤表达式
+     */
     private final String filter;
+    /**
+     * 拉取批次大小
+     */
     private final int batchSize;
+    /**
+     * 空轮询间隔毫秒
+     */
     private final long intervalMs;
+    /**
+     * Canal 到 Kafka 的桥接器，运行状态
+     */
     private volatile boolean running;
+    /**
+     * 异步任务执行和线程池管理
+     */
     private final TaskExecutor taskExecutor;
+    /**
+     * Canal 单实例连接器对象
+     */
     private CanalConnector connector;
+
     private static final Logger log = LoggerFactory.getLogger(CanalKafkaBridge.class);
 
     /**
@@ -53,7 +96,7 @@ public class CanalKafkaBridge implements SmartLifecycle {
      * @param password 密码
      * @param filter 订阅过滤表达式
      * @param batchSize 拉取批次大小
-     * @param intervalMs 空轮询间隔毫秒
+     * @param intervalMs 空轮询间隔毫秒，线程睡眠毫秒数
      */
     public CanalKafkaBridge(KafkaTemplate<String, String> kafka,
                             ObjectMapper objectMapper,
@@ -81,6 +124,7 @@ public class CanalKafkaBridge implements SmartLifecycle {
         this.intervalMs = intervalMs;
     }
 
+
     /**
      * 启动桥接器：消费 Canal 并投递到 Kafka。
      */
@@ -98,11 +142,13 @@ public class CanalKafkaBridge implements SmartLifecycle {
                 connector = CanalConnectors.newSingleConnector(new InetSocketAddress(host, port), destination, username, password);
                 log.info("Canal connecting to {}:{} dest={} user={} filter={}", host, port, destination, username, filter);
                 connector.connect();
-                // 订阅过滤表达式，仅拉取关心的表（如 outbox）
+
+                // 订阅过滤表达式，仅拉取关心的表（如 Outbox）
                 connector.subscribe(filter);
                 // 回滚到上次确认位点，保证一致性处理
                 connector.rollback();
                 log.info("Canal connected and subscribed: host={} port={} dest={} filter={} batchSize={} intervalMs={}ms", host, port, destination, filter, batchSize, intervalMs);
+
                 while (running) {
                     // 拉取一批未确认消息（不自动 ack）
                     Message message = connector.getWithoutAck(batchSize);
@@ -114,6 +160,7 @@ public class CanalKafkaBridge implements SmartLifecycle {
                         } catch (InterruptedException ignored) {}
                         continue;
                     }
+                    // 遍历该批次的每一条消息
                     for (CanalEntry.Entry entry : message.getEntries()) {
                         // 仅处理行级数据变更事件
                         if (entry.getEntryType() != CanalEntry.EntryType.ROWDATA) {
@@ -121,8 +168,8 @@ public class CanalKafkaBridge implements SmartLifecycle {
                         }
                         CanalEntry.RowChange rowChange;
 
+                        // 解析二进制为 RowChange（包含 INSERT/UPDATE 的行变更）
                         try {
-                            // 解析二进制为 RowChange（包含 INSERT/UPDATE 的行变更）
                             rowChange = CanalEntry.RowChange.parseFrom(entry.getStoreValue());
                         } catch (Exception e) {
                             continue;
@@ -133,8 +180,11 @@ public class CanalKafkaBridge implements SmartLifecycle {
                         if (eventType != CanalEntry.EventType.INSERT && eventType != CanalEntry.EventType.UPDATE) {
                             continue;
                         }
+
+                        // ArrayNode允许你以编程方式动态创建和操作 JSON 数组，而不需要预先定义 Java 类
                         ArrayNode dataArray = objectMapper.createArrayNode();
 
+                        // 遍历该条消息，将内容添加到 JSON 数组中
                         for (CanalEntry.RowData rowData : rowChange.getRowDatasList()) {
                             ObjectNode rowNode = objectMapper.createObjectNode();
                             for (CanalEntry.Column col : rowData.getAfterColumnsList()) {
@@ -146,6 +196,7 @@ public class CanalKafkaBridge implements SmartLifecycle {
                             dataArray.add(rowNode);
                         }
 
+                        // 构建传递给 Kafka 的消息
                         ObjectNode msgNode = objectMapper.createObjectNode();
                         msgNode.put("table", entry.getHeader().getTableName());
                         msgNode.put("type", eventType == CanalEntry.EventType.INSERT ? "INSERT" : "UPDATE");
@@ -157,6 +208,7 @@ public class CanalKafkaBridge implements SmartLifecycle {
                             kafka.send(OutboxTopics.CANAL_OUTBOX, json);
                         } catch (Exception ignored) {}
                     }
+
                     // 批次确认（推进位点），避免消息重放
                     connector.ack(batchId);
                 }

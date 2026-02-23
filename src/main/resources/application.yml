@@ -81,7 +81,7 @@ spring:
 
 canal:
   enabled: true
-  host: 81.70.43.139
+  host: localhost
   port: 11111
   destination: example
   username: "canal"

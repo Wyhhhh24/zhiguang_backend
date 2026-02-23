@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 -- 双向冗余：数据完全同步，但索引设计不同，服务不同查询场景
 CREATE TABLE IF NOT EXISTS following (
     id BIGINT UNSIGNED NOT NULL,
-    from_user_id BIGINT UNSIGNED NOT NULL, -- 关注者
+    from_user_id BIGINT UNSIGNED NOT NULL, -- 关注者（粉丝）
     to_user_id BIGINT UNSIGNED NOT NULL, -- 被关注者
     rel_status TINYINT NOT NULL DEFAULT 1,
     created_at DATETIME(3) NOT NULL,

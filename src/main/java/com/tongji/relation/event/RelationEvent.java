@@ -1,7 +1,7 @@
 package com.tongji.relation.event;
 
 /**
- * 构造关系事件。
+ * 关系事件实体类
  *
  * @param type       事件类型
  * @param fromUserId 触发方用户ID
@@ -9,8 +9,11 @@ package com.tongji.relation.event;
  * @param id         关系记录ID，可为空
  */
 public record RelationEvent(
+        // 事件类型 ：FollowCanceled / FollowCanceled
         String type,
+        // 触发方用户 ID ，也就是粉丝 ID
         Long fromUserId,
+        // 目标用户 ID ，也就是被关注的用户 ID
         Long toUserId,
-        Long id) {
-}
+        // 关系记录 ID
+        Long id) {}
