@@ -16,7 +16,7 @@ import java.util.function.IntFunction;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 关系接口控制器。
+ * 关系接口控制器
  * 职责：关注/取消关注、关系三态查询、关注/粉丝列表（偏移与游标）、用户维度计数读取与采样自检。
  * 缓存：ZSet 存储关注/粉丝列表；用户计数采用 SDS 固定结构（5×4 字节，大端编码），提供采样一致性校验与按需重建。
  */

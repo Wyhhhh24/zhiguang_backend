@@ -14,16 +14,16 @@ public interface OutboxMapper {
     /**
      * 写入 Outbox 事件。
      * @param id 事件ID
-     * @param aggregateType 聚合类型
+     * @param aggregateType 聚合类型 ：following
      * @param aggregateId 聚合ID
-     * @param type 事件类型
+     * @param type 事件类型 ：FollowCreated/FollowCanceled
      * @param payload 事件负载（JSON）
      * @return 影响行数
      */
     int insert(@Param("id") Long id,
-               @Param("aggregateType") String aggregateType, // "FOLLOW" / "UNFOLLOW"
+               @Param("aggregateType") String aggregateType,
                @Param("aggregateId") Long aggregateId, // 关系ID
-               @Param("type") String type, // "USER_RELATION_CHANGE"
+               @Param("type") String type,
                @Param("payload") String payload); // 事件详情
 }
 

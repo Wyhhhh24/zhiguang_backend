@@ -15,5 +15,5 @@ public record RelationEvent(
         Long fromUserId,
         // 目标用户 ID ，也就是被关注的用户 ID
         Long toUserId,
-        // 关系记录 ID
+        // 关系记录 ID ，对应关系表中的主键 ID
         Long id) {}

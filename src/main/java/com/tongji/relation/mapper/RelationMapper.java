@@ -14,7 +14,7 @@ import java.util.Map;
 @Mapper
 public interface RelationMapper {
     /**
-     * 插入关注关系。
+     * 插入关注关系
      * @param id 主键ID
      * @param fromUserId 发起关注的用户ID （也就是粉丝）
      * @param toUserId 被关注的用户ID （当前用户想要关注的用户 ID）
@@ -28,7 +28,7 @@ public interface RelationMapper {
 
 
     /**
-     * 取消关注关系（逻辑更新）。
+     * 取消关注关系（逻辑更新）
      * @param fromUserId 发起者（也就是粉丝）
      * @param toUserId 目标者（当前用户想取消关注的用户 ID）
      * @return 影响行数
@@ -38,7 +38,7 @@ public interface RelationMapper {
 
 
     /**
-     * 插入粉丝关系。
+     * 插入粉丝关系
      * @param id 主键ID
      * @param toUserId 被关注者
      * @param fromUserId 关注者（粉丝 ID）
@@ -51,7 +51,7 @@ public interface RelationMapper {
                         @Param("relStatus") Integer relStatus);
 
     /**
-     * 取消粉丝关系（逻辑更新）。
+     * 取消粉丝关系（逻辑更新）
      * @param toUserId 被关注者
      * @param fromUserId 关注者（粉丝 ID）
      * @return 影响行数
@@ -60,7 +60,7 @@ public interface RelationMapper {
                        @Param("fromUserId") Long fromUserId);
 
     /**
-     * 判断是否存在关注关系。
+     * 判断是否存在关注关系
      * @param fromUserId 发起者
      * @param toUserId 目标者
      * @return 是否存在（>0 表示存在）
@@ -69,7 +69,7 @@ public interface RelationMapper {
                         @Param("toUserId") Long toUserId);
 
     /**
-     * 列出关注用户ID（偏移分页）。
+     * 列出关注用户ID（偏移分页）
      * @param fromUserId 发起者
      * @param limit 上限
      * @param offset 偏移
@@ -80,7 +80,7 @@ public interface RelationMapper {
                                        @Param("offset") int offset);
 
     /**
-     * 列出粉丝用户 ID（偏移分页）。
+     * 列出粉丝用户 ID（偏移分页）
      * @param toUserId 被关注者
      * @param limit 上限，一页查询多少条记录
      * @param offset 偏移，跳过第几条数据开始查， 0 表示跳过第 0 条数据，也就是从第一条开始查，查询第一页的数据
@@ -91,7 +91,7 @@ public interface RelationMapper {
                                        @Param("offset") int offset);
 
     /**
-     * 列出关注行（关注列表）用于缓存回填（包含 createdAt）。
+     * 列出关注行（关注列表）用于缓存回填（包含 createdAt）
      * @param fromUserId 发起者（粉丝 ID）
      * @param limit 上限，一页查询多少条记录
      * @param offset 偏移，跳过第几条数据开始查， 0 表示跳过第 0 条数据，也就是从第一条开始查，查询第一页的数据
@@ -122,7 +122,7 @@ public interface RelationMapper {
                                                      @Param("offset") int offset);
 
     /**
-     * 列出粉丝行（粉丝列表）用于缓存回填（包含 createdAt）。
+     * 列出粉丝行（粉丝列表）用于缓存回填（包含 createdAt）
      * @param toUserId 被关注者
      * @param limit 上限，一页查询多少条记录
      * @param offset 偏移，跳过第几条数据开始查， 0 表示跳过第 0 条数据，也就是从第一条开始查，查询第一页的数据
@@ -135,12 +135,12 @@ public interface RelationMapper {
                                                     @Param("offset") int offset);
 
     /**
-     * 统计关注数（有效关系）。
+     * 统计关注数（有效关系）
      */
     int countFollowingActive(@Param("fromUserId") Long fromUserId);
 
     /**
-     * 统计粉丝数（有效关系）。
+     * 统计粉丝数（有效关系）
      */
     int countFollowerActive(@Param("toUserId") Long toUserId);
 }
