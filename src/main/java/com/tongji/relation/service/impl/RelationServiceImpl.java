@@ -72,7 +72,9 @@ public class RelationServiceImpl implements RelationService {
      */
     private final UserMapper userMapper;
 
+    // 粉丝计数器在字节数组中的第 2 部分，也就是第二个 4 个字节
     private static final int IDX_FOLLOWER = 2; // (2 - 1) * 4, 下标从 4 开始
+    // 关注计数器在字节数组中的第 1 部分，也就是前 4 个字节
     private static final int IDX_FOLLOWING = 1; // 下标从 0 开始
     
 
@@ -99,6 +101,7 @@ public class RelationServiceImpl implements RelationService {
         this.fansTopCache = Caffeine.newBuilder().maximumSize(1000).expireAfterWrite(Duration.ofMinutes(10)).build();
         this.userMapper = userMapper;
     }
+
 
     /**
      * 关注操作，限流通过令牌桶，并写入 Outbox 以异步构建缓存与粉丝表
@@ -136,6 +139,7 @@ public class RelationServiceImpl implements RelationService {
         return false;
     }
 
+
     /**
      * 取消关注操作，并写入 Outbox 事件
      * @param fromUserId 发起取消关注的用户ID
@@ -161,16 +165,6 @@ public class RelationServiceImpl implements RelationService {
         return false;
     }
 
-    /**
-     * 判断是否已关注
-     * @param fromUserId 关注发起者
-     * @param toUserId 被关注者
-     * @return 是否已关注
-     */
-    @Override
-    public boolean isFollowing(long fromUserId, long toUserId) {
-        return mapper.existsFollowing(fromUserId, toUserId) > 0;
-    }
 
     /**
      * 获取关注列表（偏移分页），优先读取 Redis ZSet，未命中时回填并设置 TTL
@@ -193,6 +187,7 @@ public class RelationServiceImpl implements RelationService {
                 userId
         );
     }
+
 
     /**
      * 获取粉丝列表（偏移分页），ZSet 优先，DB 回填并设置 TTL
@@ -217,6 +212,7 @@ public class RelationServiceImpl implements RelationService {
         );
     }
 
+
     /**
      * 查询双方关系状态
      * @param userId 当前用户ID
@@ -225,15 +221,33 @@ public class RelationServiceImpl implements RelationService {
      */
     @Override
     public Map<String, Boolean> relationStatus(long userId, long otherUserId) {
+        // 判断当前用户是否关注对方用户
         boolean following = isFollowing(userId, otherUserId);
+        // 判单对方用户是否关注当前用户
         boolean followedBy = isFollowing(otherUserId, userId);
+        // 若均为 true ，那么即为互相关注
         boolean mutual = following && followedBy;
+
+        // 返回含状态的结果 Map
         Map<String, Boolean> m = new LinkedHashMap<>();
         m.put("following", following);
         m.put("followedBy", followedBy);
         m.put("mutual", mutual);
         return m;
     }
+
+
+    /**
+     * 判断是否已关注
+     * @param fromUserId 关注发起者
+     * @param toUserId 被关注者
+     * @return 是否已关注
+     */
+    @Override
+    public boolean isFollowing(long fromUserId, long toUserId) {
+        return mapper.existsFollowing(fromUserId, toUserId) > 0;
+    }
+
 
     /**
      * 游标分页获取关注列表，按创建时间倒序基于 ZSet 分数
@@ -255,6 +269,7 @@ public class RelationServiceImpl implements RelationService {
         );
     }
 
+
     /**
      * 游标分页获取粉丝列表。
      * @param userId 用户ID
@@ -275,8 +290,12 @@ public class RelationServiceImpl implements RelationService {
         );
     }
 
+    /**
+     * 关注列表中，含有每个用户的具体信息
+     */
     @Override
     public List<ProfileResponse> followingProfiles(long userId, int limit, int offset, Long cursor) {
+        // 基于传过来的参数，调用不同的分页方法
         List<Long> ids = cursor != null ? followingCursor(userId, limit, cursor)
                                         : following(userId, limit, offset);
         return toProfiles(ids);
@@ -284,27 +303,12 @@ public class RelationServiceImpl implements RelationService {
 
     @Override
     public List<ProfileResponse> followersProfiles(long userId, int limit, int offset, Long cursor) {
+        // 基于传过来的参数，调用不同的分页方法
         List<Long> ids = cursor != null ? followersCursor(userId, limit, cursor)
                                         : followers(userId, limit, offset);
         return toProfiles(ids);
     }
 
-    /**
-     * 将用户 ID 列表映射为资料视图列表（批量查询并保持输入顺序）。
-     */
-    private List<ProfileResponse> toProfiles(List<Long> ids) {
-        if (ids == null || ids.isEmpty()) return List.of();
-        List<User> users = userMapper.listByIds(ids);
-        Map<Long, User> m = new LinkedHashMap<>(users.size());
-        for (User u : users) m.put(u.getId(), u);
-        List<ProfileResponse> out = new ArrayList<>(ids.size());
-        for (Long id : ids) {
-            User u = m.get(id);
-            if (u == null) continue;
-            out.add(new ProfileResponse(u.getId(), u.getNickname(), u.getAvatar(), u.getBio(), u.getZgId(), u.getGender(), u.getBirthday(), u.getSchool(), u.getPhone(), u.getEmail(), u.getTagsJson()));
-        }
-        return out;
-    }
 
     /**
      * 偏移分页读取：优先命中 ZSet，未命中时从 DB 回填并设置 TTL；大V用户维护本地 Top 缓存以降低冷启动开销。
@@ -349,23 +353,28 @@ public class RelationServiceImpl implements RelationService {
         if (rows != null && !rows.isEmpty()) {
             // 将数据库中查询到的数据，填充到该用户的 Redis 缓存中
             fillZSet(key, rows, idField, tsField, null);
-            // 设置缓存 TTL
+            // 然后设置缓存 TTL
             redis.expire(key, Duration.ofHours(2));
 
             // 根据查询的类型（粉丝列表/关注列表），获取下标
             int idx = switch (idField){
                 case "fromUserId" -> IDX_FOLLOWER;
                 case "toUserId" -> IDX_FOLLOWING;
-                default -> 2; // 给个默认值
+                default -> 2; // 给个默认值，默认查询粉丝数
             };
 
+            // 如果当前用户是大V，也就是有 50w 粉丝数，就将缓存添加进本地缓存中
             if (localCache != null && isBigV(userId, idx)) {
                 maybeUpdateTopCache(userId, key, localCache);
             }
 
+            // 查询完数据库，回填完缓存后，最后再返回所需要的粉丝/关注列表
             Set<String> filled = redis.opsForZSet().reverseRange(key, offset, offset + limit - 1L);
+            // 基础判断，转换为长整型列表或者返回空列表
             return filled == null ? Collections.emptyList() : toLongList(filled);
         }
+
+        // 如果数据库也不存在数据，返回空列表
         return Collections.emptyList();
     }
 
@@ -376,11 +385,16 @@ public class RelationServiceImpl implements RelationService {
      * @return 是否为大V
      */
     private boolean isBigV(long userId, int idx) {
+        // 获取该用户，用于用户维度计数的字节数组
         byte[] raw = redis.execute((RedisCallback<byte[]>) c -> c.stringCommands().get(("ucnt:" + userId).getBytes(StandardCharsets.UTF_8)));
+        // 基础校验
         if (raw == null || raw.length < 20) return false;
         long n = 0;
+        // 计算偏移量
         int off = (idx - 1) * 4;
+        // 获取对应位置的计数器，将字节数组中的对应部分，转换成十进制数
         for (int i = 0; i < 4; i++) n = (n << 8) | (raw[off + i] & 0xFFL); // &0xFFL 确保每一部分都被当作无符号数处理
+        // 判断总数是否大于等于 50w ，也就是判断是否是大 V
         return n >= 500_000L;
     }
 
@@ -394,21 +408,36 @@ public class RelationServiceImpl implements RelationService {
                                          IntFunction<Map<Long, Map<String, Object>>> rowsFetcher,
                                          String idField,
                                          String tsField) {
+        // 处理游标（cursor）的分页边界值
+        // 如果cursor为null：使用Double.POSITIVE_INFINITY（正无穷大）
+        // 如果cursor不为null：使用cursor转换的double值
         double max = cursor == null ? Double.POSITIVE_INFINITY : cursor.doubleValue();
+        // key：ZSet的键名，比如"user:posts:123"     max：查询的分值上限（小于等于这个值）
+        // Double.NEGATIVE_INFINITY：查询的分值下限（负无穷大，表示无下限）   0：offset，跳过0条（从第一条开始）    limit：返回的最大条数
         Set<String> cached = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
+
+        // 如果 Redis 中的缓存不为 null ，且数据不为空，转换为长整型集合返回
         if (cached != null && !cached.isEmpty()) {
             return toLongList(cached);
         }
+
+        // 如果 Redis 中的缓存为 null，就查询数据库，确保至少查询 100 条数据用于缓存回填，防止单次查询数据量过大
         int need = Math.max(limit, 100);
         Map<Long, Map<String, Object>> rows = rowsFetcher.apply(Math.min(need, 1000));
+
+        // 如果数据库中存在所需要的数据
         if (rows != null && !rows.isEmpty()) {
+            // 解析每一行数据，回填数据到 Redis
             fillZSet(key, rows, idField, tsField, cursor);
+            // 刷新 TTL
             redis.expire(key, Duration.ofHours(2));
+            // 返回结果
             Set<String> filled = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
             return filled == null ? Collections.emptyList() : toLongList(filled);
         }
         return Collections.emptyList();
     }
+
 
     /**
      * 将字符串集合按原顺序映射为长整型列表。
@@ -420,22 +449,8 @@ public class RelationServiceImpl implements RelationService {
     }
 
 
-
     /**
-     * 更新本地 Top 缓存：大V 用户仅缓存前 500 名，减少频繁回源与排序成本。
-     */
-    private void maybeUpdateTopCache(long userId, String key, Cache<Long, List<Long>> cache) {
-        Set<String> allSet = redis.opsForZSet().reverseRange(key, 0, 499);
-        if (allSet == null || allSet.isEmpty()) return;
-        List<Long> all = new ArrayList<>(allSet.size());
-        for (String s : allSet) all.add(Long.valueOf(s));
-        cache.put(userId, all);
-    }
-
-
-    /**
-     * 从数据中查询出了行数据
-     * 将行数据填充至 ZSet：分值为创建时间戳；若提供游标则只填充不高于游标的记录
+     * 从数据中查询出了行数据，解析行数据，将行数据填充至 ZSet：分值为创建时间戳；若提供游标则只填充不高于游标的记录
      */
     private void fillZSet(String key,
                           Map<Long, Map<String, Object>> rows,
@@ -468,6 +483,48 @@ public class RelationServiceImpl implements RelationService {
             return d.getTime();
         }
         return System.currentTimeMillis();
+    }
+
+
+    /**
+     * 将用户 ID 列表映射为资料视图列表（批量查询并保持输入顺序）。
+     */
+    private List<ProfileResponse> toProfiles(List<Long> ids) {
+        // 基础判断
+        if (ids == null || ids.isEmpty())
+            return List.of();
+        // 基于ID 列表，查询所有用户
+        List<User> users = userMapper.listByIds(ids);
+        Map<Long, User> m = new LinkedHashMap<>(users.size());
+        // userId 与 User 对象建立映射关系
+        for (User u : users)
+            m.put(u.getId(), u);
+
+        // 构建个人信息响应对象集合
+        List<ProfileResponse> out = new ArrayList<>(ids.size());
+        for (Long id : ids) {
+            User u = m.get(id);
+            if (u == null)
+                continue;
+            out.add(new ProfileResponse(u.getId(), u.getNickname(), u.getAvatar(), u.getBio(), u.getZgId(), u.getGender(), u.getBirthday(), u.getSchool(), u.getPhone(), u.getEmail(), u.getTagsJson()));
+        }
+        return out;
+    }
+
+
+    /**
+     * 更新本地 Top 缓存：大 V 用户仅缓存前 500 名，减少频繁回源与排序成本
+     */
+    private void maybeUpdateTopCache(long userId, String key, Cache<Long, List<Long>> cache) {
+        // 获取粉丝/关注列表的前 500 名
+        Set<String> allSet = redis.opsForZSet().reverseRange(key, 0, 499);
+        // 基础校验
+        if (allSet == null || allSet.isEmpty()) return;
+        List<Long> all = new ArrayList<>(allSet.size());
+        // 将字符串的 userId 转换为 Long 类型的
+        for (String s : allSet) all.add(Long.valueOf(s));
+        // 添加进本地缓存
+        cache.put(userId, all);
     }
 
 
