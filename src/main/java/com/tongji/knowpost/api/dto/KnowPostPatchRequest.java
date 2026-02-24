@@ -5,7 +5,7 @@ import jakarta.validation.constraints.Size;
 import java.util.List;
 
 /**
- * 帖子元数据更新请求（部分字段可选）。
+ * 帖子元数据更新请求（部分字段可选）
  */
 public record KnowPostPatchRequest(
         String title,

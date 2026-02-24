@@ -3,7 +3,7 @@ package com.tongji.knowpost.api.dto;
 import java.util.List;
 
 /**
- * 首页 Feed 单条记录。
+ * 首页 Feed 单条记录响应
  */
 public record FeedItemResponse(
         String id,

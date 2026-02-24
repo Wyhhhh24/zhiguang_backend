@@ -4,7 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 /**
- * 内容上传确认请求。
+ * 内容上传确认请求
  */
 public record KnowPostContentConfirmRequest(
         @NotBlank String objectKey,
