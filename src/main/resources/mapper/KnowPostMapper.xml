@@ -92,7 +92,7 @@
         WHERE id = #{id} AND creator_id = #{creatorId}
     </update>
 
-    <!-- 首页 Feed 列表查询（公开可见 + 已发布），置顶优先，其次按发布时间倒序 -->
+    <!-- 首页 Feed 列表查询（公开可见 + 已发布），其次按发布时间倒序 -->
     <select id="listFeedPublic" resultType="com.tongji.knowpost.model.KnowPostFeedRow">
         SELECT
             p.id,
