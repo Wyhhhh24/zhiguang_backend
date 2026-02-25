@@ -5,10 +5,12 @@ import com.tongji.knowpost.api.dto.KnowPostDetailResponse;
 import java.util.List;
 
 /**
- * 知文业务接口。
+ * 知文业务接口
  */
 public interface KnowPostService {
-
+    /**
+     * 创建草稿并返回新 ID。
+     */
     long createDraft(long creatorId);
 
     void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256);

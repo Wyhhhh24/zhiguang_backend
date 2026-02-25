@@ -35,24 +35,64 @@ import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class KnowPostServiceImpl implements KnowPostService {
-
+    /**
+     * 知文持久层
+     */
     private final KnowPostMapper mapper;
+    /**
+     * 雪花算法 ID 生成器
+     */
     @Resource
     private final SnowflakeIdGenerator idGen;
+    /**
+     * JSON 序列化器
+     */
     private final ObjectMapper objectMapper;
+    /**
+     * OSS 属性配置类
+     */
     private final OssProperties ossProperties;
+    /**
+     * 笔记维度计数服务
+     */
     private final CounterService counterService;
+    /**
+     * 用户维度计数服务
+     */
     private final UserCounterService userCounterService;
+    /**
+     * Redis 客户端
+     */
     private final StringRedisTemplate redis;
+    /**
+     * 知文详情本地缓存
+     */
     @Qualifier("knowPostDetailCache")
     private final Cache<String, KnowPostDetailResponse> knowPostDetailCache;
+    /**
+     * 热键探测器
+     */
     private final HotKeyDetector hotKey;
+    /**
+     * 日志记录器
+     */
     private static final Logger log = LoggerFactory.getLogger(KnowPostServiceImpl.class);
+    /**
+     * 详情页面布局版本号，默认都是 1 ，后续可能会有多版本
+     */
     private static final int DETAIL_LAYOUT_VER = 1;
+    /**
+     * 单飞锁
+     */
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
+    /**
+     * RAG 索引构建服务
+     */
     private final RagIndexService ragIndexService;
 
-    // 手动编写构造器，Spring的@Qualifier直接标注在参数上（核心）
+    // 手动编写构造器，Spring 的 @Qualifier 直接标注在参数上（核心）
+    // 当有多个相同类型的 Bean 时，用 @Qualifier指定要注入哪一个
+    // @Qualifier 就像在多个候选 Bean 中点名选择具体哪一个
     public KnowPostServiceImpl(
             KnowPostMapper mapper,
             SnowflakeIdGenerator idGen,
@@ -76,13 +116,19 @@ public class KnowPostServiceImpl implements KnowPostService {
         this.hotKey = hotKey;
         this.ragIndexService = ragIndexService;
     }
+
+
     /**
-     * 创建草稿并返回新 ID。
+     * 创建知文草稿并返回新 ID
+     * 创建草稿，也就是 Mysql 数据库中才有了这条知文记录，记录中的字段写入了一些必要的字段，没有包含任何有用的知文字段
      */
     @Transactional
     public long createDraft(long creatorId) {
+        // 调用雪花算法 ID 生成器，生成知文 ID
         long id = idGen.nextId();
+        // 获取当前时间戳
         Instant now = Instant.now();
+        // 构建新的知文对象只填充基本字段，标识该知文为草稿
         KnowPost post = KnowPost.builder()
                 .id(id)
                 .creatorId(creatorId)
@@ -93,18 +139,22 @@ public class KnowPostServiceImpl implements KnowPostService {
                 .createTime(now)
                 .updateTime(now)
                 .build();
+        // 持久化创建的知文
         mapper.insertDraft(post);
+        // 返回知文 ID
         return id;
     }
 
+
     /**
-     * 确认内容上传（写入 objectKey、etag、大小、校验和，并生成公共 URL）。
+     * 确认内容上传（也就是写入 objectKey、etag、大小、校验和，并生成公共 URL ，将这些更新到 Mysql 中对应的知文记录）
      */
     @Transactional
     public void confirmContent(long creatorId, long id, String objectKey, String etag, Long size, String sha256) {
-        // 缓存双删
+        // 缓存双删 TODO 缓存双删的作用
+        // 一 删：把旧的知文内容缓存从 Redis 、Caffeine 中都删除掉
         invalidateCache(id);
-
+        // 内容确认了，构建只含需更新字段的知文对象
         KnowPost post = KnowPost.builder()
                 .id(id)
                 .creatorId(creatorId)
@@ -112,15 +162,18 @@ public class KnowPostServiceImpl implements KnowPostService {
                 .contentEtag(etag)
                 .contentSize(size)
                 .contentSha256(sha256)
-                .contentUrl(publicUrl(objectKey))
+                .contentUrl(publicUrl(objectKey)) // 通过内容的 objectKey 得到可访问的 URL ，将其设置到 contentUrl 属性中
                 .updateTime(Instant.now())
                 .build();
-
+        // 更新对应知文的内容
         int updated = mapper.updateContent(post);
+        // 判断是否更新知文成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 二删：避免 一 删缓存的时候，知文更新事务未提交前，又读到了旧知文，将旧知文填充到缓存中去了，后面事务提交后，造成了数据的不一致
+        // 所以这里需要 二 删
         invalidateCache(id);
 
         // 触发一次预索引（草稿阶段可能因可见性/状态被跳过）
@@ -131,13 +184,18 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
     }
 
+
     /**
-     * 更新元数据：标题、标签、可见性、置顶、图片列表等。
+     * 更新元数据：标题、标签、可见性、置顶、图片列表等
+     * TODO Transactional 注解的作用是什么
      */
     @Transactional
     public void updateMetadata(long creatorId, long id, String title, Long tagId, List<String> tags, List<String> imgUrls, String visible, Boolean isTop, String description) {
+        // 缓存双删
+        // 一删
         invalidateCache(id);
 
+        // 构建含所需更新字段的知文对象
         KnowPost post = KnowPost.builder()
                 .id(id)
                 .creatorId(creatorId)
@@ -152,25 +210,33 @@ public class KnowPostServiceImpl implements KnowPostService {
                 .updateTime(Instant.now())
                 .build();
 
+        // 操作数据库，更新元信息
         int updated = mapper.updateMetadata(post);
-
+        // 判断是否更新成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 二删
         invalidateCache(id);
     }
 
+
     /**
-     * 发布草稿，设置状态与发布时间。
+     * 发布草稿，设置状态与发布时间
+     * 将知文的状态，由草稿转到发布
      */
     @Transactional
     public void publish(long creatorId, long id) {
+        // 将数据库中对应的知文记录 status 状态改为 published
+        // 意味着该知文从草稿状态转到发布状态
         int updated = mapper.publish(id, creatorId);
-
+        // 判断是否更新成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
+
+        // 调用用户维度计数服务，用户发文数 +1
         try {
             userCounterService.incrementPosts(creatorId, 1);
         } catch (Exception ignored) {}
@@ -183,102 +249,84 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
     }
 
+
     /**
-     * 设置置顶。
+     * 设置知文置顶
      */
     @Transactional
     public void updateTop(long creatorId, long id, boolean isTop) {
+        // 一删
         invalidateCache(id);
 
+        // 更新知文是否置顶字段，更改为置顶
         int updated = mapper.updateTop(id, creatorId, isTop);
-
+        // 判断是否更新成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 二删
         invalidateCache(id);
     }
 
+
     /**
-     * 设置可见性（权限）。
+     * 设置知文可见性（权限）
      */
     @Transactional
     public void updateVisibility(long creatorId, long id, String visible) {
+        // 判断用户传过来的参数，可见性取值是否有效
         if (!isValidVisible(visible)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "可见性取值非法");
         }
 
+        // 一删
         invalidateCache(id);
 
+        // 更新知文可见性
         int updated = mapper.updateVisibility(id, creatorId, visible);
-
+        //判断数据库是否更新成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 二删
         invalidateCache(id);
     }
 
+
     /**
-     * 软删除。
+     * 软删除
      */
     @Transactional
     public void delete(long creatorId, long id) {
+        // 一删
         invalidateCache(id);
 
+        // 实现软删除
         int updated = mapper.softDelete(id, creatorId);
+        // 判断是否软删除成功
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
+        // 二删
         invalidateCache(id);
     }
 
-    private boolean isValidVisible(String visible) {
-        if (visible == null) {
-            return false;
-        }
-
-        return switch (visible) {
-            case "public", "followers", "school", "private", "unlisted" -> true;
-            default -> false;
-        };
-    }
-
-    private String toJsonOrNull(List<String> list) {
-        if (list == null) {
-            return null;
-        }
-
-        try {
-            return objectMapper.writeValueAsString(list);
-        } catch (JsonProcessingException e) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "JSON 处理失败");
-        }
-    }
-
-    private String publicUrl(String objectKey) {
-        String publicDomain = ossProperties.getPublicDomain();
-
-        if (publicDomain != null && !publicDomain.isBlank()) {
-            return publicDomain.replaceAll("/$", "") + "/" + objectKey;
-        }
-
-        return "https://" + ossProperties.getBucket() + "." + ossProperties.getEndpoint() + "/" + objectKey;
-    }
 
     /**
-     * 获取知文详情（含作者信息、图片列表）。
+     * 获取知文详情（含作者信息、图片列表）
      * <p>
      * 流程：
      * 1. 尝试读取 Redis 缓存。
-     * 2. 若缓存命中，直接返回（需叠加实时计数与用户状态）。
-     * 3. 若缓存未命中，使用 SingleFlight 锁机制防止缓存击穿。
-     * 4. 锁内再次检查缓存（双重检查）。
-     * 5. 若仍未命中，回源查询数据库。
-     * 6. 校验内容状态与访问权限。
-     * 7. 组装数据并写入 Redis 缓存（带随机过期时间与热点自动延期）。
-     * 8. 返回最终结果（叠加用户维度状态）。
+     * 2. 若缓存命中，直接返回（需叠加实时计数与用户状态）
+     * 3. 若缓存未命中，使用 SingleFlight 锁机制防止缓存击穿
+     * 4. 锁内再次检查缓存（双重检查）
+     * 5. 若仍未命中，回源查询数据库
+     * 6. 校验内容状态与访问权限
+     * 7. 组装数据并写入 Redis 缓存（带随机过期时间与热点自动延期）
+     * 8. 返回最终结果（叠加用户维度状态）
      * </p>
      *
      * @param id 知文 ID
@@ -287,11 +335,13 @@ public class KnowPostServiceImpl implements KnowPostService {
      */
     @Transactional(readOnly = true)
     public KnowPostDetailResponse getDetail(long id, Long currentUserIdNullable) {
-        // 1. 构造缓存 Key：knowpost:detail:{id}:v{version}
+        // 1. 构造知文详情页 缓存 Key：knowpost:detail:{id}:v{version}
         String pageKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
 
         // 0. L1 本地缓存（Caffeine）
+        // 判断本地缓存中是否存有知文详情页
         KnowPostDetailResponse local = knowPostDetailCache.getIfPresent(pageKey);
+        // 若本地缓存中不存在
         if (local != null) {
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
@@ -493,45 +543,104 @@ public class KnowPostServiceImpl implements KnowPostService {
         );
     }
 
+
     /**
-     * 记录内容热度，并根据热度等级延长相关缓存的 TTL。
+     * 记录内容热度，并根据热度等级延长相关缓存的 TTL
      * 延长的缓存包括：
      * 1. 详情页整页缓存 (knowpost:detail:{id})
      * 2. Feed 流内容片段缓存 (feed:item:{id})
-     * 这样可以确保热点内容在 Feed 流中也不会轻易过期，避免 Feed 流回源。
+     * 这样可以确保热点内容在 Feed 流中也不会轻易过期，避免 Feed 流回源
      * @param id 内容 ID
      * @param detailPageKey 详情页缓存 Key
      */
     private void recordHotKeyAndExtendTtl(long id, String detailPageKey) {
         // 统一使用 knowpost:{id} 作为热度统计 Key
         String hotKeyId = "knowpost:" + id;
+        // 进行热度统计
         hotKey.record(hotKeyId);
 
+        // 基准 TTL 秒数
         int baseTtl = 60;
+        // 计算公共页面的动态 TTL
         int target = hotKey.ttlForPublic(baseTtl, hotKeyId);
 
         // 1. 延长详情页缓存
         Long detailTtl = redis.getExpire(detailPageKey);
         if (detailTtl < target) {
-            redis.expire(detailPageKey, java.time.Duration.ofSeconds(target));
+            redis.expire(detailPageKey, Duration.ofSeconds(target));
         }
 
         // 2. 延长 Feed 流内容片段缓存
         String itemKey = "feed:item:" + id;
         Long itemTtl = redis.getExpire(itemKey);
         if (itemTtl < target) {
-            redis.expire(itemKey, java.time.Duration.ofSeconds(target));
+            redis.expire(itemKey, Duration.ofSeconds(target));
         }
     }
 
+
+    /**
+     * 通过知文内容的所存储在的 objectKey ，拼接得到可访问知文内容的 URL
+     */
+    private String publicUrl(String objectKey) {
+        // 从属性配置类中读取自定义的域名
+        String publicDomain = ossProperties.getPublicDomain();
+        // 若设置了自定义域名，就通过自定义域名拼接上 objectKey ，得到可访问的 URL ，直接返回
+        if (publicDomain != null && !publicDomain.isBlank()) {
+            return publicDomain.replaceAll("/$", "") + "/" + objectKey;
+        }
+        // 若未设置自定义域名，就桶名+地域节点名啥的，拼接上 objectKey ，得到可访问的 URL ，直接返回
+        return "https://" + ossProperties.getBucket() + "." + ossProperties.getEndpoint() + "/" + objectKey;
+    }
+
+
+    /**
+     * 删除 Redis 、 Caffeine 中知文详情页的缓存
+     */
     private void invalidateCache(long id) {
+        // 构建出知文详情的缓存 Key
         String pageKey = "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
-
+        // 删除 Redis 中存储的知文详情页旧的缓存
         redis.delete(pageKey);
-
+        // 删除本地缓存中存储的知文详情页旧的缓存
         knowPostDetailCache.invalidate(pageKey);
     }
 
+
+    /**
+     * 判断用户传过来的可见性参数是否有效
+     */
+    private boolean isValidVisible(String visible) {
+        if (visible == null) {
+            return false;
+        }
+
+        return switch (visible) {
+            case "public", "followers", "school", "private", "unlisted" -> true;
+            default -> false;
+        };
+    }
+
+
+    /**
+     * 将字符串列表转换为 JSON 字符串
+     * 如果列表为 null 则返回 null
+     */
+    private String toJsonOrNull(List<String> list) {
+        if (list == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(list);
+        } catch (JsonProcessingException e) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "JSON 处理失败");
+        }
+    }
+
+
+    /**
+     * 将 JSON 字符串解析为字符串列表，如果解析失败或输入为空，返回空列表
+     */
     private List<String> parseStringArray(String json) {
         if (json == null || json.isBlank()) return Collections.emptyList();
         try {

@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 热键探测器（滑动时间窗口计数 + 热度分级 + TTL 动态扩展）。
+ * 热键探测器（滑动时间窗口计数 + 热度分级 + TTL 动态扩展）
  * <p>
  * 设计说明：
  * - 采用固定分段滑动窗口：窗口长度 windowSeconds，分段长度 segmentSeconds，段数 segments=window/segment；
@@ -26,63 +26,68 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Component
 public class HotKeyDetector {
+    /**
+     * 4 个热度等级
+     */
     public enum Level { NONE, LOW, MEDIUM, HIGH }
-
-    /** 缓存配置（包含窗口/分段参数、等级阈值、扩展秒数） */
+    /**
+     * 缓存配置（包含窗口/分段参数、等级阈值、扩展秒数）
+     */
     private final CacheProperties properties;
-    /** 每个 key 的滑窗分段计数数组，长度为 segments */
+    /**
+     * 每个 key 的滑窗分段计数数组，每个数组长度为 segments
+     */
     private final Map<String, int[]> counters = new ConcurrentHashMap<>();
-    /** 当前活跃分段索引（原子维护） */
+    /**
+     * 当前活跃分段索引（原子维护）
+     * 线程安全的计数器， AtomicInteger 类
+     * 创建一个初始值为 0 的原子整数，AtomicInteger 保证在多线程环境下操作的原子性
+     */
     private final AtomicInteger current = new AtomicInteger(0);
-    /** 滑窗分段数量：windowSeconds / segmentSeconds */
+    /**
+     * 滑窗分段数量：windowSeconds / segmentSeconds
+     */
     private final int segments;
 
+
     /**
-     * 初始化探测器：根据配置计算分段数量。
+     * 初始化探测器：根据配置计算分段数量
      * @param properties 缓存配置（hotkey）
      */
     public HotKeyDetector(CacheProperties properties) {
         this.properties = properties;
+        // 窗口切片大小
         int segSeconds = properties.getHotkey().getSegmentSeconds();
+        // 窗口长度
         int winSeconds = properties.getHotkey().getWindowSeconds();
+        // 滑窗分段数量
         this.segments = Math.max(1, winSeconds / Math.max(1, segSeconds));
     }
 
+
     /**
-     * 记录一次访问，将计数累加到当前分段。
+     * 记录一次访问，将计数累加到当前分段
      * @param key 缓存键
      */
     public void record(String key) {
+        // 获取该 Key 对应的滑窗分段计数数组
         int[] arr = counters.computeIfAbsent(key, k -> new int[segments]);
+        // 在这段时间中，每访问一次，滑窗分段计数数组中这个索引位置的计数加 1
         arr[current.get()]++;
     }
 
-    /**
-     * 计算近窗口总热度（各分段求和）。
-     * @param key 缓存键
-     * @return 热度值
-     */
-    public int heat(String key) {
-        int[] arr = counters.get(key);
-        if (arr == null) {
-            return 0;
-        }
-
-        int sum = 0;
-        for (int v : arr) {
-            sum += v;
-        }
-        return sum;
-    }
 
     /**
-     * 计算热度评级：根据总热度与阈值映射到等级。
+     * 计算热度评级：根据总热度与阈值的映射，得到该 Key 这段时间热度等级
      * 阈值来源：properties.hotkey.levelLow/Medium/High。
      * @param key 缓存键
      * @return 热度等级
      */
     public Level level(String key) {
+        // 计算该 Key 这段时间的总热度
         int h = heat(key);
+
+        // 读取配置文件中的阈值，进行热度评级，返回热度评级
         if (h >= properties.getHotkey().getLevelHigh()) {
             return Level.HIGH;
         }
@@ -92,20 +97,47 @@ public class HotKeyDetector {
         if (h >= properties.getHotkey().getLevelLow()) {
             return Level.LOW;
         }
-
         return Level.NONE;
     }
 
+
     /**
-     * 计算公共页面的动态 TTL：基准 TTL + 等级扩展秒数。
+     * 计算近窗口总热度（各分段求和）
+     * @param key 缓存键
+     * @return 热度值
+     */
+    public int heat(String key) {
+        // 获取该 Key 对应的滑窗分段计数数组
+        int[] arr = counters.get(key);
+
+        // 如果滑窗分段计数数组为 null ，那么也就是这个 Key 这段时间的访问量为 0
+        // 热度为 0
+        if (arr == null) {
+            return 0;
+        }
+
+        // 若不为 null ，将滑窗分段计数数组中的每个数累加，得到该 Key 这段时间的总热度值
+        int sum = 0;
+        for (int v : arr) {
+            sum += v;
+        }
+        return sum;
+    }
+
+
+    /**
+     * 计算公共页面的动态 TTL：基准 TTL + 等级扩展秒数
      * @param baseTtlSeconds 基准 TTL 秒数
      * @param key 缓存键
      * @return 动态 TTL 秒数
      */
     public int ttlForPublic(int baseTtlSeconds, String key) {
+        // 获取该 Key 对应的热度评级
         Level l = level(key);
+        // 据热度等级返回扩展秒数
         return baseTtlSeconds + extendSeconds(l);
     }
+
 
     /**
      * 计算“我的发布”页面的动态 TTL：基准 TTL + 等级扩展秒数。
@@ -114,12 +146,46 @@ public class HotKeyDetector {
      * @return 动态 TTL 秒数
      */
     public int ttlForMine(int baseTtlSeconds, String key) {
+        // 获取该 Key 对应的热度评级
         Level l = level(key);
+        // 据热度等级返回扩展秒数
         return baseTtlSeconds + extendSeconds(l);
     }
 
+
     /**
-     * 根据热度等级返回扩展秒数。
+     * 定时轮转当前分段，清零新分段以实现滑动窗口统计
+     * 触发频率由配置 `cache.hotkey.segment-seconds` 指定（单位秒）。
+     * 现在的配置是每 10s ，当前分段索引往下一个索引走，走到下一个索引之后并重置当前位置的计数，清零
+     * 清零也就是这里实现了实现近窗口热度的自然衰减
+     */
+    @Scheduled(fixedRateString = "${cache.hotkey.segment-seconds:10}000")
+    public void rotate() {
+        // 获取下一个索引
+        int next = (current.get() + 1) % segments;
+        // 当前索引走到下一个索引
+        current.set(next);
+        // 遍历线程安全 Map 中的每个 Key 对应的滑窗分段计数数组
+        // 将每个数组中的对应索引的位置清零，这也就是实现了近窗口热度的自然衰减
+        for (int[] arr : counters.values()) {
+            arr[next] = 0;
+        }
+    }
+
+
+    /**
+     * 重置指定 key 的滑窗计数（全部清零）。
+     * 用于手动降级或在配置变更后清理历史热度。
+     * @param key 缓存键
+     */
+    public void reset(String key) {
+        int[] arr = counters.get(key);
+        if (arr != null) Arrays.fill(arr, 0);
+    }
+
+
+    /**
+     * 根据热度等级返回扩展秒数
      * @param l 热度等级
      * @return 扩展秒数
      */
@@ -130,29 +196,6 @@ public class HotKeyDetector {
             case LOW -> properties.getHotkey().getExtendLowSeconds();
             default -> 0;
         };
-    }
-
-    /**
-     * 定时轮转当前分段，清零新分段以实现滑动窗口统计。
-     * 触发频率由配置 `cache.hotkey.segment-seconds` 指定（单位秒）。
-     */
-    @Scheduled(fixedRateString = "${cache.hotkey.segment-seconds:10}000")
-    public void rotate() {
-        int next = (current.get() + 1) % segments;
-        current.set(next);
-        for (int[] arr : counters.values()) {
-            arr[next] = 0;
-        }
-    }
-
-    /**
-     * 重置指定 key 的滑窗计数（全部清零）。
-     * 用于手动降级或在配置变更后清理历史热度。
-     * @param key 缓存键
-     */
-    public void reset(String key) {
-        int[] arr = counters.get(key);
-        if (arr != null) Arrays.fill(arr, 0);
     }
 }
 
