@@ -323,6 +323,18 @@ public class RelationServiceImpl implements RelationService {
             Cache<Long, List<Long>> localCache,
             long userId
     ) {
+        // 1. 先查本地缓存 (L1)
+        List<Long> top = localCache != null ? localCache.getIfPresent(userId) : null;
+        if (top != null && !top.isEmpty()) {
+            // 本地缓存通常只存 Top N (例如前500)，如果 offset 在范围内则直接返回
+            if (offset < top.size()) {
+                int to = Math.min(offset + limit, top.size());
+                return new ArrayList<>(top.subList(offset, to));
+            }
+            // 如果请求的 offset 超过了本地缓存范围，继续查 Redis
+        }
+
+        // 2. 再查 Redis (L2)
         // 获取ZSet中指定范围内的元素，reverse表示倒序（从大到小），这里的 start 和 end ，包括 start 和 end 索引位置的记录，所以需要 -1
         Set<String> cached = redis.opsForZSet().reverseRange(key, offset, offset + limit - 1L);
 
@@ -332,18 +344,7 @@ public class RelationServiceImpl implements RelationService {
             return toLongList(cached);
         }
 
-        // 如果 Redis 中的缓存未命中，从本地缓存中获取对应用户 ID 的粉丝列表，若本地缓存为 null ，返回空列表
-        List<Long> top = localCache != null ? localCache.getIfPresent(userId) : null;
-        // 如果本地缓存中的粉丝列表不为 null 且不为空
-        if (top != null && !top.isEmpty()) {
-            // 计算分页范围，防止越界，offset 是不可能的会大于总的粉丝量的
-            int from = Math.min(offset, top.size());
-            int to = Math.min(offset + limit, top.size());
-            // 返回子列表（内存分页）
-            // 直接从内存中的完整列表切分出需要的分页数据，创建新的ArrayList避免原列表被修改
-            return new ArrayList<>(top.subList(from, to));
-        }
-
+        // 3.最后查 DB 回填
         // 若本地缓存中也没有，就查询数据库，然后进行回填
         int need = Math.max(1, limit + offset);
         // 调用方法，参数为：limit+offset ，查询出当前请求所想展示的粉丝列表同时，会把前面的粉丝列表都查出来
@@ -363,6 +364,7 @@ public class RelationServiceImpl implements RelationService {
                 default -> 2; // 给个默认值，默认查询粉丝数
             };
 
+            // 回填后尝试更新本地缓存（仅针对大V）
             // 如果当前用户是大V，也就是有 50w 粉丝数，就将缓存添加进本地缓存中
             if (localCache != null && isBigV(userId, idx)) {
                 maybeUpdateTopCache(userId, key, localCache);
@@ -414,7 +416,8 @@ public class RelationServiceImpl implements RelationService {
         double max = cursor == null ? Double.POSITIVE_INFINITY : cursor.doubleValue();
         // key：ZSet的键名，比如"user:posts:123"     max：查询的分值上限（小于等于这个值）
         // Double.NEGATIVE_INFINITY：查询的分值下限（负无穷大，表示无下限）   0：offset，跳过0条（从第一条开始）    limit：返回的最大条数
-        Set<String> cached = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
+//        Set<String> cached = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
+        Set<String> cached = redis.opsForZSet().reverseRangeByScore(key, Double.NEGATIVE_INFINITY, max, 0, limit);
 
         // 如果 Redis 中的缓存不为 null ，且数据不为空，转换为长整型集合返回
         if (cached != null && !cached.isEmpty()) {
@@ -432,7 +435,8 @@ public class RelationServiceImpl implements RelationService {
             // 刷新 TTL
             redis.expire(key, Duration.ofHours(2));
             // 返回结果
-            Set<String> filled = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
+//            Set<String> filled = redis.opsForZSet().reverseRangeByScore(key, max, Double.NEGATIVE_INFINITY, 0, limit);
+            Set<String> filled = redis.opsForZSet().reverseRangeByScore(key, Double.NEGATIVE_INFINITY, max, 0, limit);
             return filled == null ? Collections.emptyList() : toLongList(filled);
         }
         return Collections.emptyList();

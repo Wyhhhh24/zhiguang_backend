@@ -36,6 +36,7 @@ public class CounterAggregationConsumer {
 
     // Lua 脚本的定义
     private final DefaultRedisScript<Long> incrScript;
+    private final DefaultRedisScript<Long> decrScript;
 
     // 使用 Redis Hash 数据结构，作为持久化聚合桶：agg:{schema}:{etype}:{eid} ，field=idx ，value=delta
     public CounterAggregationConsumer(ObjectMapper objectMapper, StringRedisTemplate redis) {
@@ -44,6 +45,10 @@ public class CounterAggregationConsumer {
         this.incrScript = new DefaultRedisScript<>();
         this.incrScript.setResultType(Long.class);
         this.incrScript.setScriptText(INCR_FIELD_LUA); // 原子将增量折叠到 SDS 指定段（大端 32 位）
+
+        this.decrScript = new DefaultRedisScript<>();
+        this.decrScript.setResultType(Long.class);
+        this.decrScript.setScriptText(DECR_FIELD_LUA);
     }
 
     /**
@@ -144,8 +149,10 @@ public class CounterAggregationConsumer {
                             String.valueOf(idx),  // 目标字段的索引（从 0 开始）
                             String.valueOf(delta));  // 要增加或减少的数值
 
-                    // 写入成功后，删除该事件，也就是删除聚合桶中对应的 Key 与 filed ，避免重复加算
-                    redis.opsForHash().delete(aggKey, field);
+//                    // 写入成功后，删除该事件，也就是删除聚合桶中对应的 Key 与 filed ，避免重复加算
+//                    redis.opsForHash().delete(aggKey, field);
+                    // 成功后扣减该字段，若结果为0则删除，避免并发写入丢失
+                    redis.execute(decrScript, List.of(aggKey), field, String.valueOf(delta));
                 } catch (Exception ex) {
                     // 留存字段，下一轮重试
                 }
@@ -159,6 +166,17 @@ public class CounterAggregationConsumer {
             }
         }
     }
+
+    private static final String DECR_FIELD_LUA = """
+            local key = KEYS[1]
+            local field = ARGV[1]
+            local delta = tonumber(ARGV[2])
+            local v = redis.call('HINCRBY', key, field, -delta)
+            if v == 0 then
+                redis.call('HDEL', key, field)
+            end
+            return v
+            """;
 
     private static final String INCR_FIELD_LUA = """
             
