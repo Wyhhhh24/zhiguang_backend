@@ -311,7 +311,7 @@ public class RelationServiceImpl implements RelationService {
 
 
     /**
-     * 偏移分页读取：优先命中 ZSet，未命中时从 DB 回填并设置 TTL；大V用户维护本地 Top 缓存以降低冷启动开销。
+     * 偏移分页读取：优先命中本地缓存（L1），未命中或 offset 超出本地范围时查 Redis ZSet（L2），再未命中时从 DB 回填并设置 TTL；大V用户回填后维护本地 Top 500 以降低冷启动开销。
      */
     private List<Long> getListWithOffset(
             String key,

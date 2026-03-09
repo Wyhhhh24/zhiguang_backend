@@ -101,7 +101,7 @@ public class FeedCacheInvalidationListener {
                     // 获取该知文的作者 userId
                     long owner = post.getCreatorId();
 
-                    // 事件行为判断，like/fav ，针对这两个行为分别对作者维度的（获赞数/收藏数）进行增量操作
+                    // 事件行为判断，like/fav ，针对这两个行为分别对作者维度的（总获赞数/总收藏数）进行增量操作
                     if ("like".equals(metric)) {
                         userCounterService.incrementLikesReceived(owner, delta);
                     }
@@ -119,7 +119,9 @@ public class FeedCacheInvalidationListener {
             // 缓存键生成，也就是每小时一个键
             long hourSlot = System.currentTimeMillis() / 3600000L;
             Set<String> keys = new LinkedHashSet<>();
-            // 获取以该（实体 Id + 时间槽）对应 Set 集合的所有成员
+            // feed:public:index:{eid}:{hourSlot} 内容索引键：该索引键存储的是与某个内容（eid）相关的所有页面缓存键（pageKey）
+            // pageKey 的格式为：feed:public:ids:{size}:{hourSlot}:{page}
+            // 获取以该（实体 Id + 时间槽）对应的所有页面缓存键
             Set<String> cur = redis.opsForSet().members("feed:public:index:" + eid + ":" + hourSlot);
             // 如果含有成员，将所有成员添加到总集合中
             if (cur != null) {
@@ -127,7 +129,7 @@ public class FeedCacheInvalidationListener {
             }
 
             // 计算前一个小时对应的 小时时间槽
-            // 获取以该（实体 Id + 时间槽）对应 Set 集合的所有成员
+            // 获取以该（实体 Id + 时间槽）对应的所有页面缓存键
             Set<String> prev = redis.opsForSet().members("feed:public:index:" + eid + ":" + (hourSlot - 1));
             // 如果含有成员，将所有成员添加到总集合中
             if (prev != null) {
@@ -139,7 +141,7 @@ public class FeedCacheInvalidationListener {
                 return;
             }
 
-            // 遍历集合中的所有分页响应
+            // 遍历所有的页面缓存键，进行更新缓存
             for (String key : keys) {
                 // 从本地缓存中获取对应 Key 的分页响应
                 FeedPageResponse local = feedPublicCache.getIfPresent(key);
@@ -194,6 +196,7 @@ public class FeedCacheInvalidationListener {
                     Long like = it.likeCount();
                     Long fav = it.favoriteCount();
 
+                    // 更新缓存中的计数
                     // 根据此次实体事件是 like/fav
                     // 对该篇知文的计数进行相对应的变更
                     if ("like".equals(metric)) {
