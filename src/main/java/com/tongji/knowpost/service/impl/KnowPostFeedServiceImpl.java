@@ -124,31 +124,34 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         // 这个 localPageKey 是本地缓存的页面 Key（非 Redis），构建 Caffeine 页面缓存 Key
         String localPageKey = cacheKey(safePage, safeSize);
 
-        // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险
+        // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险 TODO 为什么这么设置
         // 将分页维度（size/page）与时间维度（hourSlot）组合，避免热门页在整站失效时同时回源
         long hourSlot = System.currentTimeMillis() / 3600000L;
+        // 当前页，知文 ID 列表 Key
         String idsKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage;
+        // 当前页，是否还有下一页 Key
         String hasMoreKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage + ":hasMore";
 
         // L1: 先从本地缓存拿数据，高并发时抗 80% 流量
         FeedPageResponse local = feedPublicCache.getIfPresent(localPageKey);
         // 如果本地缓存可以拿到数据
         if (local != null && local.items() != null) {
-            // 对返回列表中的每个条目进行热度统计，根据热度值进行 TTL 延迟
+            // 对返回列表中的每个条目进行热度统计，根据热度值进行 TTL 延迟，统计热度的 Key 是 "knowpost:" + itemId ，延迟的 Key 是 "feed:item:" + itemId ，片段详情缓存
             for (FeedItemResponse item : local.items()) {
                 recordItemHotKey(item.id());
             }
             // 打印日志
             log.info("feed.public source=local localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
-            // 针对缓存中的当前页的知文，统计当前用户是否点赞/收藏
+            // 针对缓存中的当前页中的每一篇知文，如果用户登录，判断当前用户对当前页的每一篇知文是否点赞/收藏，如果是游客登录，就置为 null
             List<FeedItemResponse> enrichedLocal = enrich(local.items(), currentUserIdNullable);
-            // 返回响应
+            // 返回封装好的响应，计数应该都是旧的，没有进行刷新，这个本地缓存中的每一篇知文的计数，是会通过旁路缓存更新的
             return new FeedPageResponse(enrichedLocal, local.page(), local.size(), local.hasMore());
         }
 
-        // L2: 二级缓存，Redis 片段缓存，组装
+        // 如果本地缓存没有读到
+        // L2: 二级缓存，通过当前页的 Id 列表，进行 Redis 片段缓存组装成页，此时返回的 fromCache 是对用户态进行更新了，TODO 为什么要缓存用户态？
         FeedPageResponse fromCache = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
-        // 若缓存组装完成，就添加到本地缓存
+        // 若缓存组装完成，就添加到本地缓存，这里其实是添加了用户态到本地缓存中的，但是当每次读本地缓存得到数据的时候，都有进行用户态的更新，所以无妨
         if (fromCache != null) {
             feedPublicCache.put(localPageKey, fromCache);
             // 对返回列表中的每个条目进行热度统计
@@ -171,6 +174,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         Object lock = singleFlight.computeIfAbsent(idsKey, k -> new Object());
         synchronized (lock) {
             // 重查 L2 缓存，避免重复回源
+            // 对缓存片段进行组装
             FeedPageResponse again = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
             // DoubleCheck 之后，发现可以获取到缓存，也就是别的线程回源完了，直接返回缓存即可
             if (again != null) {
@@ -189,6 +193,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
 
             // 数据库回源：读取 size+1 以判断是否有下一页，后裁剪为当前页，也就是获取 hasMore
             int offset = (safePage - 1) * safeSize;
+            // 获取知文的原始数据行
             List<KnowPostFeedRow> rows = mapper.listFeedPublic(safeSize + 1, offset);
             // 获取是否有下一页的标识
             boolean hasMore = rows.size() > safeSize;
@@ -197,9 +202,10 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
                 rows = rows.subList(0, safeSize);
             }
 
-            // 构建基础列表（计数已填充），liked/faved 置为 null 以免污染用户维度缓存
+            // 构建基础列表（对原始数据行添加了计数，以及用户态为 null）
+            // 计数是已填充的，liked/faved 置为 null 以免污染用户维度缓存，并且这里是公共 Feed ，是无需置顶的
             List<FeedItemResponse> items = mapRowsToItems(rows, null, false);
-            // 进而构建页面缓存对象
+            // 进而构建页面缓存对象，包含计数的，可通过旁路更新
             FeedPageResponse respForCache = new FeedPageResponse(items, safePage, safeSize, hasMore);
 
             // 片段缓存（ids/item/count）TTL 更长并加入随机抖动，降低同一时刻大量过期
@@ -207,8 +213,9 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             int jitter = ThreadLocalRandom.current().nextInt(30);
             Duration frTtl = Duration.ofSeconds(baseTtl + jitter);
 
-            // 写入片段缓存与本地缓存
+            // 通过原始数据行、计数已填充的数据行，填充 Redis 片段缓存
             writeCaches(localPageKey, idsKey, hasMoreKey, safeSize, rows, items, hasMore, frTtl);
+            // 写入本地缓存
             feedPublicCache.put(localPageKey, respForCache);
 
             // 返回时覆盖用户维度状态，不写回缓存
@@ -224,7 +231,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
 
 
     /**
-     * 从 Redis 片段缓存组装页面：
+     * 给了当前页的 ID 列表 Key ，从 Redis 片段缓存组装页面：
      * - idsKey：列表 ID 顺序
      * - itemKey：每个条目基础信息
      * - countKey：点赞/收藏计数
@@ -237,23 +244,23 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
      * @return 组装完成的页面；不存在时返回 null
      */
     private FeedPageResponse assembleFromCache(String idsKey, String hasMoreKey, int page, int size, Long uid) {
-        // 根据 idsKey 获取当前页的知文的 ID 列表
+        // 根据 idsKey 获取当前页的知文的 ID 列表，从缓存中读
         List<String> idList = redis.opsForList().range(idsKey, 0, size - 1);
         // 当前页之后，是否有下一页
         String hasMoreStr = redis.opsForValue().get(hasMoreKey);
 
-        // 基础判断是否有知文
+        // 基础判断，是否有缓存该页的知文 Id 列表
         if (idList == null || idList.isEmpty()) {
             return null;
         }
 
-        // 构造内容元数据（标题，内容等）的 Redis Key
+        // 构造内容元数据（标题，内容等）的 Redis Key 集合
         List<String> itemKeys = new ArrayList<>(idList.size());
         for (String id : idList) {
             itemKeys.add("feed:item:" + id);
         }
 
-        // 批量获取知文 元数据，也就是缓存到 Redis 中的知文信息
+        // 批量获取对应知文的 元数据，也就是缓存到 Redis 中的知文信息
         List<String> itemJsons = redis.opsForValue().multiGet(itemKeys);
 
         // 将对应知文的 JSON 序列化回对象，放到 List 集合中
@@ -283,7 +290,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             Long likeCount = counts.getOrDefault("like", 0L);
             Long favoriteCount = counts.getOrDefault("fav", 0L);
 
-            // 用户维度状态实时计算，不落入片段缓存以避免用户数据污染
+            // 用户维度状态实时计算，不落入片段缓存以避免用户数据污染，此时进行计数的刷新了
             boolean liked = uid != null && counterService.isLiked("knowpost", base.id(), uid);
             boolean faved = uid != null && counterService.isFaved("knowpost", base.id(), uid);
 
@@ -311,7 +318,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
 
 
     /**
-     * 写入片段缓存与软缓存：
+     * 回源的时候，需要写入当前页的 ID 列表，片段缓存与软缓存 hasMore：
      * - idsKey：ID 列表（中 TTL）
      * - item：条目片段（中 TTL）
      * - hasMore：软缓存，满页时缓存 true 10~20s，否则 10s
@@ -327,15 +334,15 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
      */
     private void writeCaches(String pageKey, String idsKey, String hasMoreKey, int size, List<KnowPostFeedRow> rows, List<FeedItemResponse> items, boolean hasMore, Duration frTtl) {
         List<String> idVals = new ArrayList<>();
-
+        // 添加知文 ID 到集合
         for (KnowPostFeedRow r : rows) {
             idVals.add(String.valueOf(r.getId()));
         }
 
         if (!idVals.isEmpty()) {
-            // 将知文的 ID 列表添加到集合中
+            // 将知文的 ID 列表添加到当前页的 Redis 知文 ID 集合中
             redis.opsForList().leftPushAll(idsKey, idVals);
-            // 添加过期时间
+            // 添加过期时间，过期时间是添加随机抖动
             redis.expire(idsKey, frTtl);
             // 软缓存 hasMore：仅在满页时缓存 true，TTL 很短
             if (idVals.size() == size && hasMore) {
@@ -348,18 +355,21 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         // TODO 页面键集合索引，用于按页面维度批量失效与清理（即使没有 Redis 整页缓存，依然保留反向索引用于本地缓存通知或其他用途）
         redis.opsForSet().add("feed:public:pages", pageKey);
 
-        // TODO 建立反向索引键
+        // TODO 建立反向索引键，为什么要加时间槽
         for (FeedItemResponse it : items) {
             // 反向索引：按小时为每个内容建立“页面引用关系”，支持内容更新时快速定位受影响页面
             long hourSlot = System.currentTimeMillis() / 3600000L;
             String idxKey = "feed:public:index:" + it.id() + ":" + hourSlot;
             redis.opsForSet().add(idxKey, pageKey);
+            // 添加过期时间，过期时间是添加随机抖动
             redis.expire(idxKey, frTtl);
 
             try {
                 // 写入片段缓存，同时设置过期时间
                 String itemKey = "feed:item:" + it.id();
+                // 这个 itemJson 里面是包含计数的，但是不包含用户态，其实计数的话，是每次都会 enrich 重新计数的
                 String itemJson = objectMapper.writeValueAsString(it);
+                // 添加过期时间，过期时间是添加随机抖动
                 redis.opsForValue().set(itemKey, itemJson, frTtl);
             } catch (Exception ignored) {}
         }
@@ -377,6 +387,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
 
         int baseTtl = 60;
         // 根据热度值，计算公共页面的动态 TTL
+        // 热度值档位 50-200-500 ：额外延迟 TTL 档位 20-60-120
         int target = hotKey.ttlForPublic(baseTtl, hotKeyId);
 
         // 延长该内容的详情片段缓存

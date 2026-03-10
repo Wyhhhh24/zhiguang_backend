@@ -177,7 +177,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 所以这里需要 二 删
         invalidateCache(id);
 
-        // 触发一次预索引（草稿阶段可能因可见性/状态被跳过）
+        // 触发一次预索引（草稿阶段可能因可见性/状态被跳过） TODO 预索引
         try {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
@@ -238,12 +238,12 @@ public class KnowPostServiceImpl implements KnowPostService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
         }
 
-        // 调用用户维度计数服务，用户发文数 +1
+        // 调用用户维度计数服务，用户发文数 +1 TODO 用户维度计数服务 发文数 +1
         try {
             userCounterService.incrementPosts(creatorId, 1);
         } catch (Exception ignored) {}
 
-        // 发布成功后触发一次预索引，减少首次问答冷启动
+        // 发布成功后触发一次预索引，减少首次问答冷启动 TODO 预索引
         try {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
@@ -325,7 +325,7 @@ public class KnowPostServiceImpl implements KnowPostService {
      * <p>
      * 流程：
      * 1. 尝试读取 Caffeine、Redis 缓存
-     * 2. 若缓存命中，直接返回（需叠加实时计数与用户状态）
+     * 2. 若缓存命中，直接返回（需叠加实时计数与用户状态），需要进行 enrich
      * 3. 若缓存未命中，使用 SingleFlight 锁机制防止缓存击穿
      * 4. 锁内再次检查缓存（双重检查）
      * 5. 若仍未命中，回源查询数据库
@@ -335,7 +335,7 @@ public class KnowPostServiceImpl implements KnowPostService {
      * </p>
      *
      * @param id 知文 ID
-     * @param currentUserIdNullable 当前用户 ID（可空，用于判断权限与点赞状态）
+     * @param currentUserIdNullable 当前用户 ID（可空，用于判断权限与点赞状态），也就是可以是游客登录
      * @return 知文详情响应
      */
     @Transactional(readOnly = true)
@@ -352,8 +352,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             // 如果该 item 正在被高频访问，自动延长详情页整页缓存 (knowpost:detail:{id}) 、Feed 流内容片段缓存 (feed:item:{id}) TTL
             recordHotKeyAndExtendTtl(id, pageKey);
             log.info("detail source=local key={}", pageKey);
-            // 将知文详情页中的未缓存的信息：当篇知文的，点赞数/收藏数/当前用户是否点赞/当前用户是否收藏，进行填充
-            // 直接返回
+            // 将知文详情页中的未缓存的信息：当篇知文的，点赞数/收藏数/当前用户是否点赞/当前用户是否收藏，进行填充，直接返回
+            // 刷新计数，获取用户态
             return enrichDetailResponse(local, currentUserIdNullable, true);
         }
 
@@ -362,8 +362,9 @@ public class KnowPostServiceImpl implements KnowPostService {
         String cached = redis.opsForValue().get(pageKey);
 
         // 2. 第一次尝试处理缓存命中
-        // 如果缓存中有数据（且不是 "NULL"），则解析并返回
+        // 如果缓存中有数据（且不是 "NULL"），则解析并返回，已经刷新计数，获取用户态了
         KnowPostDetailResponse resp = tryProcessCacheHit(cached, id, pageKey, currentUserIdNullable, "page");
+        // 若解析出来，直接返回
         if (resp != null) {
             return resp;
         }
@@ -376,6 +377,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             // TODO 重要：在获取锁后，再次检查缓存，因为在排队等待锁的过程中，前一个请求可能已经把数据写入缓存了，所以再次判断能否可以获取到缓存
             String again = redis.opsForValue().get(pageKey);
             try {
+                // 判断 Redis 缓存是否有效，若有效，刷新计数，获取用户态，返回填充的响应对象
                 resp = tryProcessCacheHit(again, id, pageKey, currentUserIdNullable, "page(after-flight)");
             } catch (BusinessException e) {
                 // tryProcessCacheHit 会抛异常，如果缓存中明确记录了 "NULL"（即内容不存在），则直接抛出异常，不再查库
@@ -407,6 +409,7 @@ public class KnowPostServiceImpl implements KnowPostService {
             // 私有策略：否则仅作者本人可见
             boolean isPublic = "published".equals(row.getStatus()) && "public".equals(row.getVisible());
             boolean isOwner = currentUserIdNullable != null && row.getCreatorId() != null && currentUserIdNullable.equals(row.getCreatorId());
+            // 如果不是公开的，同时又不是自己的作品，就抛异常
             if (!isPublic && !isOwner) {
                 // 移除锁
                 singleFlight.remove(pageKey);
@@ -415,11 +418,11 @@ public class KnowPostServiceImpl implements KnowPostService {
             }
 
             // 8. 组装响应对象
-            // 解析图片和标签 JSON
+            // 解析查到数据的图片和标签 JSON ，转换为 List 对象
             List<String> images = parseStringArray(row.getImgUrls());
             List<String> tags = parseStringArray(row.getTags());
 
-            // 此处查询的计数仅作为缓存的基础值，后续 enrich 会刷新
+            // 此处查询的计数仅作为缓存的基础值，后续 enrich 会刷新，回源时的那次计数，返回前就不需要重新计数
             Map<String, Long> counts = counterService.getCounts("knowpost", String.valueOf(row.getId()), List.of("like", "fav"));
             Long likeCount = counts.getOrDefault("like", 0L);
             Long favoriteCount = counts.getOrDefault("fav", 0L);
@@ -437,8 +440,8 @@ public class KnowPostServiceImpl implements KnowPostService {
                     row.getAuthorTagJson(),
                     likeCount,
                     favoriteCount,
-                    null, // liked 状态暂时留空，由 enrich 填充
-                    null, // faved 状态暂时留空，由 enrich 填充
+                    null, // liked 状态暂时留空，是否点赞，由 enrich 填充
+                    null, // faved 状态暂时留空，是否收藏，由 enrich 填充
                     row.getIsTop(),
                     row.getVisible(),
                     row.getType(),
@@ -454,6 +457,8 @@ public class KnowPostServiceImpl implements KnowPostService {
                 int jitter = ThreadLocalRandom.current().nextInt(30);
 
                 // 根据热度检测结果动态调整 TTL，热点内容缓存时间更长
+                // pageKey 为 "knowpost:detail:" + id + ":v" + DETAIL_LAYOUT_VER;
+                // 是通过知文详情缓存的 Key 进行热度计算
                 int target = hotKey.ttlForPublic(baseTtl, pageKey);
                 redis.opsForValue().set(pageKey, json, Duration.ofSeconds(Math.max(target, baseTtl + jitter)));
 
@@ -465,14 +470,14 @@ public class KnowPostServiceImpl implements KnowPostService {
 
             // 10. 释放锁并返回最终结果
             singleFlight.remove(pageKey);
-            // 返回前调用 enrich 填充用户维度的 liked/faved 状态
+            // 返回前调用 enrich 填充用户维度的 liked/faved 状态，此时就不需要刷新计数了，因为回源的时候刚刚刷新了计数
             return enrichDetailResponse(resp, currentUserIdNullable, false);
         }
     }
 
 
     /**
-     * 尝试处理缓存命中逻辑。
+     * 尝试处理缓存命中逻辑，从 Redis 中读到了缓存，需要判断是否缓存命中
      *
      * @param cached Redis 中读取的缓存字符串
      * @param id 内容 ID
@@ -486,26 +491,23 @@ public class KnowPostServiceImpl implements KnowPostService {
         if (cached == null) {
             return null;
         }
-
         // 2. 命中空值缓存（防止穿透）
         if ("NULL".equals(cached)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "内容不存在");
         }
-
         try {
             // 3. 反序列化缓存中的知文详细信息
             KnowPostDetailResponse base = objectMapper.readValue(cached, KnowPostDetailResponse.class);
-
             // 从 Redis 中获取到了，就填充 L1 ，也就是填充到 Caffeine 中，本地缓存中
             knowPostDetailCache.put(pageKey, base);
 
             // 4. 记录热度并尝试续期
             // 如果该内容正在被高频访问，自动延长详情页整页缓存 (knowpost:detail:{id}) 、Feed 流内容片段缓存 (feed:item:{id}) TTL
+            // 传入实体 ID 是为了基于这个实体 ID 创建对应的热点 Key
             recordHotKeyAndExtendTtl(id, pageKey);
             // 记录回源日志
             log.info("detail source={} key={}", sourceLog, pageKey);
-
-            // 5. 叠加实时数据（计数与用户状态）并返回
+            // 5. 叠加实时数据（计数与用户状态）并返回，刷新计数，获取用户态
             return enrichDetailResponse(base, uid, true);
         } catch (Exception ignored) {
             // 反序列化失败等异常情况，视为未命中，回源修复
@@ -518,7 +520,7 @@ public class KnowPostServiceImpl implements KnowPostService {
      * 丰富详情响应：叠加实时计数与用户状态
      *
      * @param base 基础响应对象（来自缓存或 DB）
-     * @param uid 当前用户 ID
+     * @param uid 当前用户 ID （可以为 null ，游客访问）
      * @param refreshCounts 是否需要从 CounterService 刷新计数（缓存命中时需要，DB 回源时不需要）
      * @return 叠加了最新状态的响应对象
      */
@@ -527,7 +529,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         Long favoriteCount = base.favoriteCount();
 
         // 1. 刷新计数（仅在走缓存时执行）
-        // 因为缓存中的计数可能是旧的，权威计数在 CounterService (Redis SDS)
+        // 因为缓存中的计数可能是旧的，所以当获取到缓存时需要重新计算点赞数/收藏数，进行权威计数在 CounterService (Redis SDS)
         if (refreshCounts) {
             Map<String, Long> counts = counterService.getCounts("knowpost", base.id(), List.of("like", "fav"));
             if (counts != null) {
@@ -537,8 +539,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             }
         }
 
-        // 2. 获取用户维度的状态（是否已点赞/收藏）
-        // 这部分数据是个性化的，不能存入公共缓存
+        // 2. 获取用户维度的状态（是否已点赞/收藏），这部分数据是个性化的，不能存入公共缓存
+        // 用户 ID 可以为 null ，游客访问
         Boolean liked = uid != null && counterService.isLiked("knowpost", base.id(), uid);
         Boolean faved = uid != null && counterService.isFaved("knowpost", base.id(), uid);
 
@@ -587,9 +589,8 @@ public class KnowPostServiceImpl implements KnowPostService {
         int target = hotKey.ttlForPublic(baseTtl, hotKeyId);
 
         // 1. 延长详情页缓存
-        // 获取该 Key 的 TTL
+        // 获取该 Key 的 TTL，如果当前 TTL 小于延迟后的 TTL ，那么就延长
         Long detailTtl = redis.getExpire(detailPageKey);
-        // 如果当前 TTL 小于延迟后的 TTL ，那么就延长
         if (detailTtl < target) {
             redis.expire(detailPageKey, Duration.ofSeconds(target));
         }
@@ -639,6 +640,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             return false;
         }
 
+        // 如果 visible的值是 "public"、"followers"、"school"、"private"、"unlisted"中的任意一个，就返回 true
+        // 否则（default情况），返回 false
         return switch (visible) {
             case "public", "followers", "school", "private", "unlisted" -> true;
             default -> false;

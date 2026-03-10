@@ -38,6 +38,7 @@ public class KnowPostController {
         return new KnowPostDraftCreateResponse(String.valueOf(id));
     }
 
+
     /**
      * 上传内容成功后回传确认，写入对象存储信息。
      */
@@ -49,6 +50,7 @@ public class KnowPostController {
         service.confirmContent(userId, id, request.objectKey(), request.etag(), request.size(), request.sha256());
         return ResponseEntity.noContent().build();
     }
+
 
     /**
      * 更新元数据（标题、标签、可见性、置顶、图片列表等）。
@@ -62,6 +64,7 @@ public class KnowPostController {
         return ResponseEntity.noContent().build();
     }
 
+
     /**
      * 发布帖子（状态置为 published）。
      */
@@ -72,6 +75,7 @@ public class KnowPostController {
         service.publish(userId, id);
         return ResponseEntity.noContent().build();
     }
+
 
     /**
      * 设置置顶状态。
@@ -85,6 +89,7 @@ public class KnowPostController {
         return ResponseEntity.noContent().build();
     }
 
+
     /**
      * 设置可见性（权限）。
      */
@@ -97,6 +102,7 @@ public class KnowPostController {
         return ResponseEntity.noContent().build();
     }
 
+
     /**
      * 删除知文（软删除）。
      */
@@ -107,6 +113,7 @@ public class KnowPostController {
         service.delete(userId, id);
         return ResponseEntity.noContent().build();
     }
+
 
     /**
      * 首页 Feed（公开、已发布）分页查询；默认每页 20，最大 50。
@@ -119,6 +126,7 @@ public class KnowPostController {
         return feedService.getPublicFeed(page, size, userId);
     }
 
+
     /**
      * 我的知文（当前用户已发布）分页查询；默认每页 20，最大 50。
      */
@@ -129,6 +137,7 @@ public class KnowPostController {
         long userId = jwtService.extractUserId(jwt);
         return feedService.getMyPublished(userId, page, size);
     }
+
 
     /**
      * 知文详情（公开：published+public；非公开需作者本人）。
