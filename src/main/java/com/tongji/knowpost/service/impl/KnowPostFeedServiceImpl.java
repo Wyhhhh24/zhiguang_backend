@@ -27,16 +27,45 @@ import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class KnowPostFeedServiceImpl implements KnowPostFeedService {
-
+    /**
+     * 知文持久层对象
+     */
     private final KnowPostMapper mapper;
+    /**
+     * Redis 客户端
+     */
     private final StringRedisTemplate redis;
+    /**
+     * 序列化器
+     */
     private final ObjectMapper objectMapper;
+    /**
+     * 计数服务
+     */
     private final CounterService counterService;
+    /**
+     * 首页公共 Feed 本地缓存
+     */
     private final Cache<String, FeedPageResponse> feedPublicCache;
+    /**
+     * 我的发布 Feed 本地缓存
+     */
     private final Cache<String, FeedPageResponse> feedMineCache;
+    /**
+     * 热点 Key 探测器
+     */
     private final HotKeyDetector hotKey;
+    /**
+     * 日志类
+     */
     private static final Logger log = LoggerFactory.getLogger(KnowPostFeedServiceImpl.class);
+    /**
+     * Feed 版本
+     */
     private static final int LAYOUT_VER = 1;
+    /**
+     * 单飞锁
+     */
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
 
     /**
@@ -78,6 +107,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         return "feed:public:" + size + ":" + page + ":v" + LAYOUT_VER;
     }
 
+
     /**
      * 获取公开的首页 Feed（按发布时间倒序，不受置顶影响）。
      * 采用三级缓存：本地 Caffeine、Redis 页面缓存、Redis 片段缓存（ids/item/count）。
@@ -87,9 +117,11 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
      * @return 带分页信息的 Feed 列表（liked/faved 为用户维度）
      */
     public FeedPageResponse getPublicFeed(int page, int size, Long currentUserIdNullable) {
+        // 每页数量（1~50）
         int safeSize = Math.min(Math.max(size, 1), 50);
+        // 页码（≥1）
         int safePage = Math.max(page, 1);
-        // 这个 localPageKey 是本地缓存的页面 Key（非 Redis）
+        // 这个 localPageKey 是本地缓存的页面 Key（非 Redis），构建 Caffeine 页面缓存 Key
         String localPageKey = cacheKey(safePage, safeSize);
 
         // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险
@@ -100,21 +132,23 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
 
         // L1: 先从本地缓存拿数据，高并发时抗 80% 流量
         FeedPageResponse local = feedPublicCache.getIfPresent(localPageKey);
-
+        // 如果本地缓存可以拿到数据
         if (local != null && local.items() != null) {
-            // 对返回列表中的每个条目进行热度统计
+            // 对返回列表中的每个条目进行热度统计，根据热度值进行 TTL 延迟
             for (FeedItemResponse item : local.items()) {
                 recordItemHotKey(item.id());
             }
-
+            // 打印日志
             log.info("feed.public source=local localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+            // 针对缓存中的当前页的知文，统计当前用户是否点赞/收藏
             List<FeedItemResponse> enrichedLocal = enrich(local.items(), currentUserIdNullable);
-
+            // 返回响应
             return new FeedPageResponse(enrichedLocal, local.page(), local.size(), local.hasMore());
         }
 
         // L2: 二级缓存，Redis 片段缓存，组装
         FeedPageResponse fromCache = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
+        // 若缓存组装完成，就添加到本地缓存
         if (fromCache != null) {
             feedPublicCache.put(localPageKey, fromCache);
             // 对返回列表中的每个条目进行热度统计
@@ -123,7 +157,9 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
                     recordItemHotKey(item.id());
                 }
             }
+            // 记录日志
             log.info("feed.public source=3tier localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+            // 返回响应
             return fromCache;
         }
 
@@ -131,11 +167,12 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         // 为了防止高并发下（例如 1000 个请求同时访问同一页）
         // 所有请求同时打到数据库（造成 缓存击穿 ），这里使用了锁
         // 单航班机制：以 idsKey 作为“航班号”
-        // 并发下同一页只允许一个请求回源数据库，其余在锁内优先重查缓存，避免击穿惊群
+        // 并发下同一页只允许一个请求回源数据库，其余在锁内优先重查缓存，避免击穿机器
         Object lock = singleFlight.computeIfAbsent(idsKey, k -> new Object());
         synchronized (lock) {
             // 重查 L2 缓存，避免重复回源
             FeedPageResponse again = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
+            // DoubleCheck 之后，发现可以获取到缓存，也就是别的线程回源完了，直接返回缓存即可
             if (again != null) {
                 feedPublicCache.put(localPageKey, again);
                 // 对返回列表中的每个条目进行热度统计
@@ -145,22 +182,26 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
                     }
                 }
                 log.info("feed.public source=3tier(after-flight) localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+                // 释放单飞锁
                 singleFlight.remove(idsKey);
                 return again;
             }
 
-            // 数据库回源：读取 size+1 以判断是否有下一页，后裁剪为当前页
+            // 数据库回源：读取 size+1 以判断是否有下一页，后裁剪为当前页，也就是获取 hasMore
             int offset = (safePage - 1) * safeSize;
             List<KnowPostFeedRow> rows = mapper.listFeedPublic(safeSize + 1, offset);
+            // 获取是否有下一页的标识
             boolean hasMore = rows.size() > safeSize;
+            // 也就是有下一页了，也就是获取到 hasMore 标识了，可以进行裁剪了
             if (hasMore) {
                 rows = rows.subList(0, safeSize);
             }
 
             // 构建基础列表（计数已填充），liked/faved 置为 null 以免污染用户维度缓存
             List<FeedItemResponse> items = mapRowsToItems(rows, null, false);
-
+            // 进而构建页面缓存对象
             FeedPageResponse respForCache = new FeedPageResponse(items, safePage, safeSize, hasMore);
+
             // 片段缓存（ids/item/count）TTL 更长并加入随机抖动，降低同一时刻大量过期
             int baseTtl = 60;
             int jitter = ThreadLocalRandom.current().nextInt(30);
@@ -176,61 +217,11 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             // 释放单航班锁，允许后续请求正常进入
             singleFlight.remove(idsKey);
 
+            // 响应
             return new FeedPageResponse(enriched, safePage, safeSize, hasMore);
         }
     }
 
-    /**
-     * 记录单个内容条目的热度，并尝试延长其相关片段缓存的 TTL。
-     * @param itemId 内容 ID
-     */
-    private void recordItemHotKey(String itemId) {
-        // 使用内容 ID 作为热点统计 Key，而不是页面 Key
-        String hotKeyId = "knowpost:" + itemId;
-        hotKey.record(hotKeyId);
-
-        int baseTtl = 60;
-        int target = hotKey.ttlForPublic(baseTtl, hotKeyId);
-
-        // 延长该内容的详情片段缓存
-        String itemKey = "feed:item:" + itemId;
-        Long itemTtl = redis.getExpire(itemKey);
-        if (itemTtl < target) {
-            redis.expire(itemKey, Duration.ofSeconds(target));
-        }
-    }
-
-    /**
-     * 叠加用户维度状态，将 liked/faved 根据用户计算覆盖到列表上。
-     * 不改写底层缓存，避免不同用户状态互相污染。
-     * @param base 基础列表（含计数）
-     * @param uid 用户 ID（可空）
-     * @return 叠加 liked/faved 的列表
-     */
-    private List<FeedItemResponse> enrich(List<FeedItemResponse> base, Long uid) {
-        List<FeedItemResponse> out = new ArrayList<>(base.size());
-
-        for (FeedItemResponse it : base) {
-            boolean liked = uid != null && counterService.isLiked("knowpost", it.id(), uid);
-            boolean faved = uid != null && counterService.isFaved("knowpost", it.id(), uid);
-            out.add(new FeedItemResponse(
-                    it.id(),
-                    it.title(),
-                    it.description(),
-                    it.coverImage(),
-                    it.tags(),
-                    it.authorAvatar(),
-                    it.authorNickname(),
-                    it.tagJson(),
-                    it.likeCount(),
-                    it.favoriteCount(),
-                    liked,
-                    faved,
-                    it.isTop()
-            ));
-        }
-        return out;
-    }
 
     /**
      * 从 Redis 片段缓存组装页面：
@@ -246,9 +237,12 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
      * @return 组装完成的页面；不存在时返回 null
      */
     private FeedPageResponse assembleFromCache(String idsKey, String hasMoreKey, int page, int size, Long uid) {
-        // 需要展示知文的 ID 列表
+        // 根据 idsKey 获取当前页的知文的 ID 列表
         List<String> idList = redis.opsForList().range(idsKey, 0, size - 1);
+        // 当前页之后，是否有下一页
         String hasMoreStr = redis.opsForValue().get(hasMoreKey);
+
+        // 基础判断是否有知文
         if (idList == null || idList.isEmpty()) {
             return null;
         }
@@ -258,18 +252,18 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         for (String id : idList) {
             itemKeys.add("feed:item:" + id);
         }
-        // 批量获取知文 元数据
+
+        // 批量获取知文 元数据，也就是缓存到 Redis 中的知文信息
         List<String> itemJsons = redis.opsForValue().multiGet(itemKeys);
 
+        // 将对应知文的 JSON 序列化回对象，放到 List 集合中
         List<FeedItemResponse> items = new ArrayList<>(idList.size());
-
         for (int i = 0; i < idList.size(); i++) {
             String itemJson = (itemJsons != null && i < itemJsons.size()) ? itemJsons.get(i) : null;
             if (itemJson == null) {
                 // 缺失元数据片段，触发回源
                 return null;
             }
-
             try {
                 items.add(objectMapper.readValue(itemJson, FeedItemResponse.class));
             } catch (Exception e) {
@@ -277,13 +271,14 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             }
         }
 
+        // 将获取到的每一个知文的对象填充，点赞数/收藏数
         List<FeedItemResponse> enriched = new ArrayList<>(idList.size());
         for (int i = 0; i < idList.size(); i++) {
             FeedItemResponse base = items.get(i);
             if (base == null) {
                 continue;
             }
-
+            // 获取当前知文的点赞数/收藏数，当前用户态（是否点赞/收藏）
             Map<String, Long> counts = counterService.getCounts("knowpost", String.valueOf(base.id()), List.of("like", "fav"));
             Long likeCount = counts.getOrDefault("like", 0L);
             Long favoriteCount = counts.getOrDefault("fav", 0L);
@@ -314,6 +309,7 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         return new FeedPageResponse(enriched, page, size, hasMore);
     }
 
+
     /**
      * 写入片段缓存与软缓存：
      * - idsKey：ID 列表（中 TTL）
@@ -337,7 +333,9 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         }
 
         if (!idVals.isEmpty()) {
+            // 将知文的 ID 列表添加到集合中
             redis.opsForList().leftPushAll(idsKey, idVals);
+            // 添加过期时间
             redis.expire(idsKey, frTtl);
             // 软缓存 hasMore：仅在满页时缓存 true，TTL 很短
             if (idVals.size() == size && hasMore) {
@@ -347,9 +345,10 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             }
         }
 
-        // 页面键集合索引，用于按页面维度批量失效与清理（即使没有 Redis 整页缓存，依然保留反向索引用于本地缓存通知或其他用途）
+        // TODO 页面键集合索引，用于按页面维度批量失效与清理（即使没有 Redis 整页缓存，依然保留反向索引用于本地缓存通知或其他用途）
         redis.opsForSet().add("feed:public:pages", pageKey);
 
+        // TODO 建立反向索引键
         for (FeedItemResponse it : items) {
             // 反向索引：按小时为每个内容建立“页面引用关系”，支持内容更新时快速定位受影响页面
             long hourSlot = System.currentTimeMillis() / 3600000L;
@@ -358,12 +357,36 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
             redis.expire(idxKey, frTtl);
 
             try {
+                // 写入片段缓存，同时设置过期时间
                 String itemKey = "feed:item:" + it.id();
                 String itemJson = objectMapper.writeValueAsString(it);
                 redis.opsForValue().set(itemKey, itemJson, frTtl);
             } catch (Exception ignored) {}
         }
     }
+
+
+    /**
+     * 记录单个内容条目的热度，并尝试延长其相关片段缓存的 TTL。
+     * @param itemId 内容 ID
+     */
+    private void recordItemHotKey(String itemId) {
+        // 使用内容 ID 作为热点统计 Key，而不是页面 Key ，也就是针对页面中的包含的每一篇知文，分知文进行统计热点
+        String hotKeyId = "knowpost:" + itemId;
+        hotKey.record(hotKeyId);
+
+        int baseTtl = 60;
+        // 根据热度值，计算公共页面的动态 TTL
+        int target = hotKey.ttlForPublic(baseTtl, hotKeyId);
+
+        // 延长该内容的详情片段缓存
+        String itemKey = "feed:item:" + itemId;
+        Long itemTtl = redis.getExpire(itemKey);
+        if (itemTtl < target) {
+            redis.expire(itemKey, Duration.ofSeconds(target));
+        }
+    }
+
 
     /**
      * 生成“我的发布”列表的缓存 Key（用户维度）。
@@ -463,16 +486,22 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         List<FeedItemResponse> items = new ArrayList<>(rows.size());
 
         for (KnowPostFeedRow r : rows) {
+            // 将标签/图片集合从 JSON 序列化为列表
             List<String> tags = parseStringArray(r.getTags());
             List<String> imgs = parseStringArray(r.getImgUrls());
+            // 封面就是图片集合中的首张图片
             String cover = imgs.isEmpty() ? null : imgs.getFirst();
 
+            // 获取该篇知文的计数
             Map<String, Long> counts = counterService.getCounts("knowpost", String.valueOf(r.getId()), List.of("like", "fav"));
             Long likeCount = counts.getOrDefault("like", 0L);
             Long favoriteCount = counts.getOrDefault("fav", 0L);
 
+            // 根据传过来的 userId （可能为 null） 获取当前用户的用户态
             Boolean liked = userIdNullable != null && counterService.isLiked("knowpost", String.valueOf(r.getId()), userIdNullable);
             Boolean faved = userIdNullable != null && counterService.isFaved("knowpost", String.valueOf(r.getId()), userIdNullable);
+
+            // 是否置顶
             Boolean isTop = includeIsTop ? r.getIsTop() : null;
 
             items.add(new FeedItemResponse(
@@ -494,6 +523,40 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         return items;
     }
 
+
+    /**
+     * 叠加用户维度状态，将 liked/faved 根据用户计算覆盖到列表上。
+     * 不改写底层缓存，避免不同用户状态互相污染。
+     * @param base 基础列表（含计数）
+     * @param uid 用户 ID（可空）
+     * @return 叠加 liked/faved 的列表
+     */
+    private List<FeedItemResponse> enrich(List<FeedItemResponse> base, Long uid) {
+        List<FeedItemResponse> out = new ArrayList<>(base.size());
+
+        for (FeedItemResponse it : base) {
+            // 判断每一篇知文，对于当前用户是否点赞/收藏
+            boolean liked = uid != null && counterService.isLiked("knowpost", it.id(), uid);
+            boolean faved = uid != null && counterService.isFaved("knowpost", it.id(), uid);
+            // 填充这些信息，然后返回
+            out.add(new FeedItemResponse(
+                    it.id(),
+                    it.title(),
+                    it.description(),
+                    it.coverImage(),
+                    it.tags(),
+                    it.authorAvatar(),
+                    it.authorNickname(),
+                    it.tagJson(),
+                    it.likeCount(),
+                    it.favoriteCount(),
+                    liked,
+                    faved,
+                    it.isTop()
+            ));
+        }
+        return out;
+    }
 
 
     /**

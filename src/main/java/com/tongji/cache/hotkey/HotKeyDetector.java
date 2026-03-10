@@ -88,6 +88,7 @@ public class HotKeyDetector {
         int h = heat(key);
 
         // 读取配置文件中的阈值，进行热度评级，返回热度评级
+        // 热度值档位 50-200-500 ：额外延迟 TTL 档位 20-60-120
         if (h >= properties.getHotkey().getLevelHigh()) {
             return Level.HIGH;
         }
